@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Icono adaptable (Android 8 en adelante): el sistema recorta el frente con la
+  forma que use el teléfono —círculo, cuadrado redondeado, gota— sobre el fondo.
+  Por eso van separados: el fondo llena siempre, y el personaje se queda en el
+  centro sin que ninguna forma le corte la cara.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

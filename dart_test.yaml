@@ -1,0 +1,13 @@
+# Las capturas no corren de rutina: escriben archivos PNG y sirven para mirar
+# cómo quedó una pantalla, no para verificar que algo funcione.
+#
+#   flutter test
+#       → todo menos las capturas
+#
+#   flutter test test/captura_test.dart --tags captura --run-skipped
+#       → genera los PNG en la carpeta `capturas/`
+tags:
+  captura:
+    skip: >-
+      Se corre a mano:
+      flutter test test/captura_test.dart --tags captura --run-skipped

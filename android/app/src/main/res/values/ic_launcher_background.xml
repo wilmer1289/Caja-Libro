@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- El crema del escenario del login: el mismo fondo sobre el que aparece
+         el personaje dentro de la app. -->
+    <color name="ic_launcher_background">#F1EBDF</color>
+</resources>
