@@ -105,7 +105,11 @@ class _InicioState extends State<Inicio> {
 
   Future<void> _registrar(Tipo tipo) async {
     final mensajero = ScaffoldMessenger.of(context);
-    final guardado = await RegistroHoja.abrir(context, tipo);
+    final guardado = await RegistroHoja.abrir(
+      context,
+      tipo,
+      onAbrirCaja: () => _irA(Seccion.iArqueo),
+    );
     if (guardado == null) return;
 
     // En el celular, un golpecito: confirma que se guardó sin tener que mirar.

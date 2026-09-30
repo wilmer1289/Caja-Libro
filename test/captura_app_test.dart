@@ -17,6 +17,7 @@ import 'package:mi_caja/datos/repositorio/repositorio_movimientos.dart';
 import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
 import 'package:mi_caja/dominio/enums.dart';
+import 'package:mi_caja/dominio/fondo.dart';
 import 'package:mi_caja/dominio/jornada.dart';
 import 'package:mi_caja/dominio/movimiento.dart';
 import 'package:mi_caja/dominio/negocio.dart';
@@ -41,11 +42,36 @@ import 'package:provider/provider.dart';
 /// Un repositorio en memoria: la app se arma igual que la de verdad, pero sin
 /// SQLite, que en las pruebas de widgets no responde.
 class _RepositorioEnMemoria extends RepositorioMovimientos {
-  _RepositorioEnMemoria(this._datos, this._negocio, [List<Jornada>? cajas])
-    : _cajas = [...?cajas];
+  _RepositorioEnMemoria(
+    this._datos,
+    this._negocio, {
+    List<Jornada>? cajas,
+    this.fondo,
+  }) : _cajas = [...?cajas];
 
   /// De la más vieja a la más nueva.
   final List<Jornada> _cajas;
+  FondoNegocio? fondo;
+
+  @override
+  Future<FondoNegocio?> leerFondo() async => fondo;
+
+  @override
+  Future<FondoNegocio> contarFondo({
+    required Conteo conteo,
+    required String usuario,
+  }) async => fondo = FondoNegocio(
+    conteo: conteo,
+    contadoEn: DateTime.now(),
+    usuario: usuario,
+  );
+
+  @override
+  Future<FondoNegocio> corregirFondo({
+    required Conteo conteo,
+    required String usuario,
+  }) async =>
+      fondo = fondo!.corregir(conteo, usuario: usuario, en: DateTime.now());
 
   final List<Movimiento> _datos;
   Negocio _negocio;
@@ -193,6 +219,28 @@ final _negocio = Negocio(
   tesorero: 'Ana Ruiz',
 );
 
+/// El efectivo del negocio, contado antes de la primera caja: cinco de
+/// S/ 100 y diez de S/ 50.
+FondoNegocio _fondo() => FondoNegocio(
+  conteo: const Conteo({10000: 5, 5000: 10}),
+  contadoEn: DateTime.now().subtract(const Duration(days: 4)),
+  usuario: 'usuario',
+);
+
+/// Una caja abierta desde temprano, para poder registrar en efectivo.
+List<Jornada> _unaCajaAbierta() => [
+  Jornada(
+    id: 'c1',
+    numero: 1,
+    abiertaEn: DateTime.now().subtract(const Duration(hours: 3)),
+    apertura: 10000,
+    conteoApertura: const Conteo({10000: 1}),
+    inicio: InicioCaja.primera,
+    responsable: 'Ana Ruiz',
+    usuario: 'usuario',
+  ),
+];
+
 final _lienzo = GlobalKey();
 
 Widget _app(
@@ -200,12 +248,18 @@ Widget _app(
   Negocio? negocio,
   List<Movimiento>? datos,
   List<Jornada>? cajas,
+  FondoNegocio? fondo,
 }) {
   return RepaintBoundary(
     key: _lienzo,
     child: ChangeNotifierProvider(
       create: (_) => EstadoCaja(
-        _RepositorioEnMemoria(datos ?? _datos(), negocio ?? _negocio, cajas),
+        _RepositorioEnMemoria(
+          datos ?? _datos(),
+          negocio ?? _negocio,
+          cajas: cajas,
+          fondo: fondo ?? (cajas == null ? null : _fondo()),
+        ),
       ),
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
@@ -465,7 +519,7 @@ void main() {
 
   testWidgets('entró: 2,000 en efectivo no se guarda', (tester) async {
     _tamano(tester, escritorio);
-    await tester.pumpWidget(_app(inicio));
+    await tester.pumpWidget(_app(inicio, cajas: _unaCajaAbierta()));
     await _esperar(tester, pasos: 10);
     await tester.tap(find.text('Entró'));
     await _esperar(tester, pasos: 20);
@@ -525,7 +579,7 @@ void main() {
     tester,
   ) async {
     _tamano(tester, escritorio);
-    await tester.pumpWidget(_app(inicio));
+    await tester.pumpWidget(_app(inicio, cajas: _unaCajaAbierta()));
     await _esperar(tester, pasos: 10);
     await tester.tap(find.text('Entró'));
     await _esperar(tester, pasos: 20);
@@ -747,7 +801,7 @@ void main() {
     await _esperar(tester, pasos: 10);
     await tester.tap(find.text('Arqueo de caja'));
     await _esperar(tester);
-    await tester.tap(find.text('Otro monto'));
+    await tester.tap(find.text('Con otro monto'));
     await _esperar(tester, pasos: 10);
     await tester.enterText(
       find.byWidgetPredicate(
@@ -763,6 +817,69 @@ void main() {
     await tester.tap(find.text('Imprimir'));
     await _esperar(tester, pasos: 20);
     await _capturar(tester, 'app-resumen-cajas');
+  });
+
+  testWidgets('caja del día: contar el efectivo y abrir la primera', (
+    tester,
+  ) async {
+    _tamano(tester, const Size(1366, 1100));
+    await tester.pumpWidget(_app(inicio));
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.text('Arqueo de caja'));
+    await _esperar(tester);
+    final fichas = find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.hintText == '0',
+    );
+    await tester.enterText(fichas.at(1), '5'); // S/ 100
+    await tester.enterText(fichas.at(2), '10'); // S/ 50
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, 'app-caja-contar');
+
+    await tester.tap(find.text('Guardar el efectivo del negocio'));
+    await _esperar(tester);
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '0.00',
+      ),
+      '300',
+    );
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, 'app-caja-primera');
+
+    await tester.tap(find.text('Corregir conteo'));
+    await _esperar(tester, pasos: 20);
+    await tester.enterText(
+      find.descendant(of: find.byType(Dialog), matching: fichas).at(2),
+      '9',
+    );
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, 'app-caja-corregir');
+  });
+
+  testWidgets('registro en efectivo con la caja cerrada', (tester) async {
+    _tamano(tester, escritorio);
+    await tester.pumpWidget(_app(inicio));
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.text('Entró'));
+    await _esperar(tester, pasos: 20);
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Efectivo'));
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Ventas'));
+    await tester.enterText(find.byType(TextField).first, '25');
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, 'app-registro-caja-cerrada');
+  });
+
+  testWidgets('caja del día en el celular: contar y abrir', (tester) async {
+    _tamano(tester, const Size(390, 1700));
+    await tester.pumpWidget(
+      _app(inicio, cajas: cajasDePrueba(conAbierta: false)),
+    );
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.byTooltip('Secciones'));
+    await _esperar(tester, pasos: 20);
+    await tester.tap(find.text('Arqueo de caja'));
+    await _esperar(tester);
+    await _capturar(tester, 'app-caja-abrir-celular');
   });
 
   testWidgets('caja del día y documentos en el celular', (tester) async {

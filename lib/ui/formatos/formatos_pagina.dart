@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/formato.dart';
@@ -103,6 +105,32 @@ class _FormatosPaginaState extends State<FormatosPagina> {
           ),
         ),
       );
+      return;
+    }
+    // La web no tiene carpeta de documentos: el PDF se descarga con el
+    // diálogo del navegador, y el CSV —que se escribe con dart:io— todavía
+    // no tiene ese camino.
+    if (kIsWeb) {
+      if (!pdf) {
+        mensajero.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'La descarga en CSV todavía no está disponible en la web. '
+              'Pruébala en Windows o Android.',
+            ),
+          ),
+        );
+        return;
+      }
+      await Printing.sharePdf(
+        bytes: await ExportadorPdf.formato(libro),
+        filename: ExportadorPdf.nombreFormato(libro),
+      );
+      if (mounted) {
+        mensajero.showSnackBar(
+          const SnackBar(content: Text('Guardado en tu carpeta de descargas')),
+        );
+      }
       return;
     }
     try {

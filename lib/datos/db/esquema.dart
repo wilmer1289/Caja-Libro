@@ -1,9 +1,10 @@
 /// DDL de la base local.
 ///
-/// Cuatro tablas: el libro de caja es una lista de movimientos; el negocio
+/// Cinco tablas: el libro de caja es una lista de movimientos; el negocio
 /// es una sola fila con los datos del encabezado de los formatos y los saldos
 /// con que abre el período; las categorías que el usuario agrega con el "+"
-/// del formulario; y las cajas, cada una con su apertura y su cierre.
+/// del formulario; las cajas, cada una con su apertura y su cierre; y el
+/// efectivo del negocio, contado una vez, de donde sale lo de cada caja.
 class Esquema {
   /// v1: el libro básico.
   /// v2: la contabilidad del Excel — correlativo, cuenta asociada, IGV,
@@ -14,13 +15,16 @@ class Esquema {
   ///     billetes y vuelto, responsable de caja del negocio, y arqueos.
   /// v5: la caja del día —se abre con un monto y se cierra contando—, que
   ///     reemplaza al arqueo suelto contra el libro.
-  static const version = 5;
+  /// v6: el efectivo del negocio, contado billete por billete antes de la
+  ///     primera caja.
+  static const version = 6;
 
   static const tablaMovimientos = 'movimientos';
   static const tablaNegocio = 'negocio';
   static const tablaCategorias = 'categorias_propias';
   static const tablaArqueos = 'arqueos';
   static const tablaJornadas = 'jornadas';
+  static const tablaFondo = 'fondo';
 
   static const crearMovimientos =
       '''
@@ -167,6 +171,20 @@ class Esquema {
       supervisor      TEXT    NOT NULL DEFAULT '',
       observacion     TEXT    NOT NULL DEFAULT '',
       ajuste_id       TEXT
+    )
+  ''';
+
+  /// El efectivo del negocio: una sola fila, con id fijo 1, igual que el
+  /// negocio. Se corrige encima; el momento en que se contó no cambia.
+  static const crearFondo =
+      '''
+    CREATE TABLE $tablaFondo (
+      id            INTEGER PRIMARY KEY,
+      conteo        TEXT    NOT NULL,
+      contado_en    INTEGER NOT NULL,
+      usuario       TEXT    NOT NULL DEFAULT '',
+      corregido_en  INTEGER,
+      corregido_por TEXT    NOT NULL DEFAULT ''
     )
   ''';
 

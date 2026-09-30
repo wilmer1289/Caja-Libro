@@ -8,6 +8,7 @@ import '../../datos/export/exportador_pdf.dart';
 import '../../datos/export/impresion.dart';
 import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
+import '../../dominio/fondo.dart';
 import '../../dominio/importe.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/movimiento.dart';
@@ -20,17 +21,22 @@ import '../widgets/tarjeta_saldo.dart';
 import 'acta_vista.dart';
 import 'resumen_cajas.dart';
 
+part 'efectivo_negocio.dart';
+
 /// El arqueo de caja, pensado como la caja del día.
 ///
-/// 1. Se **abre** la caja con el monto con que empieza: la primera vez se
-///    escribe; después se elige seguir con lo que quedó, empezar de cero
-///    (lo de antes se guarda aparte) u otro monto.
+/// 0. La primera vez se **cuenta el efectivo del negocio**, billete por
+///    billete. Queda bloqueado (sólo se corrige si se contó mal), y de ahí
+///    sale lo que se pone en la caja cada día.
+/// 1. Se **abre** la caja: seguir con lo que quedó, empezar de cero o con
+///    otro monto. Lo que no se pone en la caja queda guardado aparte.
 /// 2. Mientras está abierta, cada cobro y pago en **efectivo** entra solo, y
 ///    no se edita desde acá: lo que dice la caja es lo que dice el libro.
 /// 3. Al terminar se **cierra** contando billete por billete. Queda el acta
 ///    con cuánto empezó, cuánto entró y salió, y con cuánto terminó.
 ///
-/// Abajo, el resumen de las cajas de hoy, la semana, el mes o todas.
+/// Al costado, cuánto efectivo tiene el negocio y dónde está, y el resumen
+/// de las cajas de hoy, la semana, el mes o todas.
 class ArqueoPagina extends StatefulWidget {
   const ArqueoPagina({super.key, required this.usuario});
 
@@ -60,7 +66,12 @@ class _ArqueoPaginaState extends State<ArqueoPagina> {
         final margen = medidas.maxWidth >= 760 ? 28.0 : 16.0;
 
         final Widget principal;
-        if (abierta == null) {
+        if (abierta == null && estado.fondo == null) {
+          principal = _ContarFondo(
+            key: const ValueKey('fondo'),
+            usuario: widget.usuario,
+          );
+        } else if (abierta == null) {
           principal = _AbrirCaja(
             key: const ValueKey('abrir'),
             usuario: widget.usuario,
@@ -82,7 +93,19 @@ class _ArqueoPaginaState extends State<ArqueoPagina> {
           );
         }
 
-        const resumen = ResumenCajasPanel();
+        final resumen = Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (estado.fondo != null) ...[
+              _EfectivoNegocioTarjeta(usuario: widget.usuario),
+              const SizedBox(height: 20),
+            ] else if (abierta != null) ...[
+              const _FaltaFondo(),
+              const SizedBox(height: 20),
+            ],
+            const ResumenCajasPanel(),
+          ],
+        );
 
         return ListView(
           padding: EdgeInsets.fromLTRB(margen, margen, margen, 120),
@@ -95,15 +118,15 @@ class _ArqueoPaginaState extends State<ArqueoPagina> {
                       children: [
                         Expanded(child: principal),
                         const SizedBox(width: 20),
-                        const SizedBox(width: 380, child: resumen),
+                        SizedBox(width: 380, child: resumen),
                       ],
                     )
                   : principal,
             ),
             if (!amplio || cerrando) ...[
               const SizedBox(height: 20),
-              const Aparece(
-                retraso: Duration(milliseconds: 100),
+              Aparece(
+                retraso: const Duration(milliseconds: 100),
                 child: resumen,
               ),
             ],
@@ -118,9 +141,12 @@ class _ArqueoPaginaState extends State<ArqueoPagina> {
 // Abrir
 // ---------------------------------------------------------------------------
 
-/// Cómo se quiere empezar cuando hubo una caja antes.
+/// Cómo se quiere empezar.
 enum _Arranque { seguir, cero, otro }
 
+/// El segundo paso: abrir la caja con lo que se elija. Lo que se pone en la
+/// caja sale del efectivo del negocio —lo que dejó la caja anterior más lo
+/// guardado aparte—, y lo que no se pone queda guardado.
 class _AbrirCaja extends StatefulWidget {
   const _AbrirCaja({super.key, required this.usuario});
 
@@ -131,7 +157,7 @@ class _AbrirCaja extends StatefulWidget {
 }
 
 class _AbrirCajaState extends State<_AbrirCaja> {
-  _Arranque _arranque = _Arranque.seguir;
+  late _Arranque _arranque;
   final _monto = TextEditingController();
   late final TextEditingController _responsable;
   bool _contar = false;
@@ -145,6 +171,11 @@ class _AbrirCajaState extends State<_AbrirCaja> {
     super.initState();
     final estado = context.read<EstadoCaja>();
     final anterior = estado.ultimaCajaCerrada;
+    // Si quedó plata en la caja, lo más común es seguir con ella; si no,
+    // hay que decir cuánto se saca de lo guardado.
+    _arranque = (estado.efectivoNegocio?.enCaja ?? 0) > 0
+        ? _Arranque.seguir
+        : _Arranque.otro;
     _responsable = TextEditingController(
       text: anterior?.responsable.isNotEmpty == true
           ? anterior!.responsable
@@ -159,35 +190,34 @@ class _AbrirCajaState extends State<_AbrirCaja> {
     super.dispose();
   }
 
-  /// Hay una caja anterior con plata: se ofrece seguir con ella.
-  bool _hayAnterior(Jornada? anterior) =>
-      anterior != null && anterior.cierre > 0;
-
-  /// Se escribe (o se cuenta) el monto: la primera vez, o "otro monto".
-  bool _pideMonto(Jornada? anterior) =>
-      !_hayAnterior(anterior) || _arranque == _Arranque.otro;
-
+  /// Lo escrito o contado, o null si no se entiende.
   int? get _montoEscrito =>
-      _contar ? _conteo.total : (Importe.leer(_monto.text.trim()) ?? -1);
+      _contar ? _conteo.total : Importe.leer(_monto.text.trim());
 
   Future<void> _abrir() async {
     final estado = context.read<EstadoCaja>();
+    final efectivo = estado.efectivoNegocio;
     final anterior = estado.ultimaCajaCerrada;
     setState(() {
       _intento = true;
       _error = null;
     });
+    if (efectivo == null) {
+      setState(() => _error = 'Primero cuenta el efectivo del negocio.');
+      return;
+    }
+    final quedo = efectivo.enCaja;
 
     final int apertura;
     final InicioCaja inicio;
     Conteo? conteo;
-    if (_hayAnterior(anterior) && _arranque == _Arranque.seguir) {
-      apertura = anterior!.cierre;
+    if (_arranque == _Arranque.seguir && quedo > 0) {
+      apertura = quedo;
       inicio = InicioCaja.continua;
-      conteo = anterior.conteoCierre;
-    } else if (_hayAnterior(anterior) && _arranque == _Arranque.cero) {
+      conteo = anterior?.cierre == quedo ? anterior!.conteoCierre : null;
+    } else if (_arranque != _Arranque.otro) {
       apertura = 0;
-      inicio = InicioCaja.desdeCero;
+      inicio = anterior == null ? InicioCaja.primera : InicioCaja.desdeCero;
       conteo = Conteo.vacio;
     } else {
       final escrito = _montoEscrito;
@@ -209,7 +239,7 @@ class _AbrirCajaState extends State<_AbrirCaja> {
         responsable: _responsable.text,
         usuario: widget.usuario,
         conteo: conteo,
-        anterior: anterior?.cierre ?? 0,
+        anterior: quedo,
       );
       HapticFeedback.mediumImpact();
     } on ArgumentError catch (e) {
@@ -224,15 +254,19 @@ class _AbrirCajaState extends State<_AbrirCaja> {
   @override
   Widget build(BuildContext context) {
     final estado = context.watch<EstadoCaja>();
+    final efectivo = estado.efectivoNegocio;
+    if (efectivo == null) return const SizedBox.shrink();
     final anterior = estado.ultimaCajaCerrada;
-    final hayAnterior = _hayAnterior(anterior);
-    final cierre = anterior?.cierre ?? 0;
+    final quedo = efectivo.enCaja;
+    final total = efectivo.total;
+    String soles(int c) => Formato.soles(c / 100);
 
     final bajada = anterior == null
-        ? '¿Con cuánto dinero empieza? Es el sencillo con que arrancas. Desde '
-              'que la abres, cada cobro y pago en efectivo entra solo.'
+        ? 'Elige con cuánto empieza. Lo que no pongas en la caja queda '
+              'guardado aparte. Desde que la abres, cada cobro y pago en '
+              'efectivo entra solo.'
         : 'La caja N° ${anterior.numero} cerró ${_cuando(anterior.cerradaEn!)} '
-              'con ${Formato.soles(cierre / 100)}.';
+              'con ${soles(anterior.cierre)}.';
 
     return TarjetaClara(
       child: Padding(
@@ -240,6 +274,10 @@ class _AbrirCajaState extends State<_AbrirCaja> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (anterior == null) ...[
+              const _PasosApertura(actual: 1),
+              const SizedBox(height: 18),
+            ],
             _Titulo(
               icono: Icons.lock_open_rounded,
               titulo: anterior == null
@@ -247,53 +285,52 @@ class _AbrirCajaState extends State<_AbrirCaja> {
                   : 'Abre la caja',
               bajada: bajada,
             ),
-            if (hayAnterior) ...[
-              const SizedBox(height: 18),
+            const SizedBox(height: 16),
+            _Disponible(quedo: quedo, guardado: efectivo.guardado),
+            const SizedBox(height: 16),
+            if (quedo > 0) ...[
               _OpcionArranque(
                 icono: Icons.redo_rounded,
                 titulo: 'Seguir con lo que quedó',
-                bajada: 'Empiezas con ${Formato.soles(cierre / 100)}',
+                bajada: 'Empiezas con ${soles(quedo)}; lo guardado no se toca',
                 elegida: _arranque == _Arranque.seguir,
                 onTap: () => setState(() => _arranque = _Arranque.seguir),
               ),
               const SizedBox(height: 8),
-              _OpcionArranque(
-                icono: Icons.savings_outlined,
-                titulo: 'Empezar de cero',
-                bajada:
-                    'Los ${Formato.soles(cierre / 100)} se guardan aparte y '
-                    'la caja arranca vacía',
-                elegida: _arranque == _Arranque.cero,
-                onTap: () => setState(() => _arranque = _Arranque.cero),
-              ),
-              const SizedBox(height: 8),
-              _OpcionArranque(
-                icono: Icons.edit_outlined,
-                titulo: 'Otro monto',
-                bajada: 'Dejas un sencillo y guardas el resto',
-                elegida: _arranque == _Arranque.otro,
-                onTap: () => setState(() => _arranque = _Arranque.otro),
-              ),
             ],
+            _OpcionArranque(
+              icono: Icons.savings_outlined,
+              titulo: 'Empezar de cero',
+              bajada: quedo > 0
+                  ? 'Los ${soles(quedo)} pasan a lo guardado y la caja '
+                        'arranca vacía'
+                  : 'La caja arranca vacía y todo sigue guardado',
+              elegida: _arranque == _Arranque.cero,
+              onTap: () => setState(() => _arranque = _Arranque.cero),
+            ),
+            const SizedBox(height: 8),
+            _OpcionArranque(
+              icono: Icons.edit_outlined,
+              titulo: 'Con otro monto',
+              bajada: 'Lo sacas de lo que tienes: hasta ${soles(total)}',
+              elegida: _arranque == _Arranque.otro,
+              onTap: () => setState(() => _arranque = _Arranque.otro),
+            ),
             AnimatedSize(
               duration: const Duration(milliseconds: 220),
               curve: Curves.easeOutCubic,
               alignment: Alignment.topCenter,
-              child: _pideMonto(anterior)
+              child: _arranque == _Arranque.otro
                   ? Padding(
                       padding: const EdgeInsets.only(top: 18),
                       child: _MontoApertura(
                         monto: _monto,
                         contar: _contar,
                         conteo: _conteo,
+                        disponible: total,
                         onContar: (v) => setState(() => _contar = v),
                         onConteo: (c) => setState(() => _conteo = c),
                         onCambio: () => setState(() => _error = null),
-                        apartado: hayAnterior && !_contar
-                            ? cierre - (Importe.leer(_monto.text) ?? cierre)
-                            : hayAnterior
-                            ? cierre - _conteo.total
-                            : null,
                       ),
                     )
                   : const SizedBox(width: double.infinity),
@@ -314,28 +351,14 @@ class _AbrirCajaState extends State<_AbrirCaja> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(
-                _error!,
-                style: const TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: Tokens.salio,
-                ),
-              ),
+              _TextoError(_error!),
             ],
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: _abriendo ? null : _abrir,
               style: FilledButton.styleFrom(minimumSize: const Size(0, 52)),
               icon: _abriendo
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
+                  ? const _Girando()
                   : const Icon(Icons.lock_open_rounded, size: 20),
               label: const Text('Abrir caja'),
             ),
@@ -346,30 +369,136 @@ class _AbrirCajaState extends State<_AbrirCaja> {
   }
 }
 
+/// Lo que hay para abrir: lo que quedó en la caja y lo guardado aparte.
+/// Lado a lado si hay ancho; en el celular, uno debajo del otro, para que
+/// los rótulos no se corten.
+class _Disponible extends StatelessWidget {
+  const _Disponible({required this.quedo, required this.guardado});
+
+  final int quedo;
+  final int guardado;
+
+  @override
+  Widget build(BuildContext context) {
+    final datos = [
+      ('Quedó en la caja', quedo, false),
+      ('Guardado aparte', guardado, false),
+      ('Tienes en total', quedo + guardado, true),
+    ];
+
+    TextStyle monto(bool fuerte) => TextStyle(
+      fontSize: fuerte ? 16 : 14.5,
+      fontWeight: fuerte ? FontWeight.w800 : FontWeight.w600,
+      color: Tokens.texto,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    const rotulo = TextStyle(fontSize: 11.5, color: Tokens.texto2);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
+      decoration: BoxDecoration(
+        color: Tokens.fondo,
+        borderRadius: BorderRadius.circular(Tokens.radio),
+        border: Border.all(color: Tokens.borde),
+      ),
+      child: LayoutBuilder(
+        builder: (context, medidas) {
+          if (medidas.maxWidth < 420) {
+            return Column(
+              children: [
+                for (final (texto, centavos, fuerte) in datos)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            texto,
+                            style: rotulo.copyWith(
+                              fontSize: 12.5,
+                              fontWeight: fuerte ? FontWeight.w600 : null,
+                              color: fuerte ? Tokens.texto : null,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          Formato.soles(centavos / 100),
+                          style: monto(fuerte),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          }
+          return Row(
+            children: [
+              for (var i = 0; i < datos.length; i++) ...[
+                if (i > 0)
+                  Container(
+                    width: 1,
+                    height: 32,
+                    margin: const EdgeInsets.symmetric(horizontal: 12),
+                    color: Tokens.borde,
+                  ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        datos[i].$1,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: rotulo,
+                      ),
+                      const SizedBox(height: 2),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          Formato.soles(datos[i].$2 / 100),
+                          style: monto(datos[i].$3),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _MontoApertura extends StatelessWidget {
   const _MontoApertura({
     required this.monto,
     required this.contar,
     required this.conteo,
+    required this.disponible,
     required this.onContar,
     required this.onConteo,
     required this.onCambio,
-    this.apartado,
   });
 
   final TextEditingController monto;
   final bool contar;
   final Conteo conteo;
+
+  /// Todo el efectivo del negocio: de ahí sale lo que se pone.
+  final int disponible;
+
   final ValueChanged<bool> onContar;
   final ValueChanged<Conteo> onConteo;
   final VoidCallback onCambio;
 
-  /// Cuánto de la caja anterior se guarda aparte con este monto.
-  final int? apartado;
-
   @override
   Widget build(BuildContext context) {
-    final a = apartado;
+    final puesto = contar ? conteo.total : Importe.leer(monto.text.trim());
+    final queda = puesto == null ? null : disponible - puesto;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -392,7 +521,7 @@ class _MontoApertura extends StatelessWidget {
               ),
             ),
           )
-        else
+        else ...[
           TextField(
             controller: monto,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -406,13 +535,33 @@ class _MontoApertura extends StatelessWidget {
               hintText: '0.00',
             ),
           ),
-        if (a != null && a != 0) ...[
-          const SizedBox(height: 6),
+          if (disponible > 0) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ActionChip(
+                avatar: const Icon(Icons.all_inclusive_rounded, size: 16),
+                label: Text('Todo · ${Formato.soles(disponible / 100)}'),
+                onPressed: () {
+                  monto.text = (disponible / 100).toStringAsFixed(2);
+                  onCambio();
+                },
+              ),
+            ),
+          ],
+        ],
+        if (queda != null) ...[
+          const SizedBox(height: 8),
           Text(
-            a > 0
-                ? 'Se guardan aparte ${Formato.soles(a / 100)}.'
-                : 'Se agregan ${Formato.soles(-a / 100)} de afuera.',
-            style: const TextStyle(fontSize: 12, color: Tokens.texto2),
+            queda >= 0
+                ? 'Quedan guardados ${Formato.soles(queda / 100)}.'
+                : 'Son ${Formato.soles(-queda / 100)} más de lo que tienes: '
+                      'se suman como plata que entra de afuera.',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: queda >= 0 ? FontWeight.w400 : FontWeight.w600,
+              color: queda >= 0 ? Tokens.texto2 : const Color(0xFF8A6A1F),
+            ),
           ),
         ],
         const SizedBox(height: 4),

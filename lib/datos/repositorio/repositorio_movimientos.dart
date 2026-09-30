@@ -4,12 +4,14 @@ import '../../dominio/boleta.dart';
 import '../../dominio/categoria.dart';
 import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
+import '../../dominio/fondo.dart';
 import '../../dominio/igv.dart';
 import '../../dominio/importe.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/negocio.dart';
 import '../local/categoria_dao.dart';
+import '../local/fondo_dao.dart';
 import '../local/jornada_dao.dart';
 import '../local/movimiento_dao.dart';
 import '../local/negocio_dao.dart';
@@ -28,26 +30,86 @@ class RepositorioMovimientos {
     NegocioDao? negocioDao,
     CategoriaDao? categoriaDao,
     JornadaDao? jornadaDao,
+    FondoDao? fondoDao,
     FuenteRemota? remoto,
   }) : _dao = dao ?? MovimientoDao(),
        _negocioDao = negocioDao ?? NegocioDao(),
        _categoriaDao = categoriaDao ?? CategoriaDao(),
        _jornadaDao = jornadaDao ?? JornadaDao(),
+       _fondoDao = fondoDao ?? FondoDao(),
        _remoto = remoto ?? const FuenteRemotaNula();
 
   final MovimientoDao _dao;
   final NegocioDao _negocioDao;
   final CategoriaDao _categoriaDao;
   final JornadaDao _jornadaDao;
+  final FondoDao _fondoDao;
   final FuenteRemota _remoto;
+
+  /// El efectivo del negocio, o null si todavía no se contó.
+  Future<FondoNegocio?> leerFondo() => _fondoDao.leer();
+
+  /// Guarda el primer conteo del efectivo del negocio. Se hace una vez, con
+  /// la caja cerrada; después sólo se corrige.
+  Future<FondoNegocio> contarFondo({
+    required Conteo conteo,
+    required String usuario,
+  }) async {
+    if (await leerFondo() != null) {
+      throw ArgumentError(
+        'El efectivo del negocio ya se contó. Si contaste mal, corrígelo.',
+      );
+    }
+    final problema = FondoNegocio.problemaCon(conteo, await leerJornadas());
+    if (problema != null) throw ArgumentError(problema);
+    final fondo = FondoNegocio(
+      conteo: conteo,
+      contadoEn: _alMilisegundo(DateTime.now()),
+      usuario: usuario,
+    );
+    await _fondoDao.guardar(fondo);
+    return fondo;
+  }
+
+  /// Corrige lo que se contó, por si se contó mal. Lo que vino después —lo
+  /// guardado en cada apertura— se recalcula solo a partir de este conteo.
+  Future<FondoNegocio> corregirFondo({
+    required Conteo conteo,
+    required String usuario,
+  }) async {
+    final actual = await leerFondo();
+    if (actual == null) {
+      throw ArgumentError('Todavía no se contó el efectivo del negocio.');
+    }
+    final problema = FondoNegocio.problemaCon(
+      conteo,
+      await leerJornadas(),
+      contadoEn: actual.contadoEn,
+    );
+    if (problema != null) throw ArgumentError(problema);
+    final corregido = actual.corregir(
+      conteo,
+      usuario: usuario,
+      en: _alMilisegundo(DateTime.now()),
+    );
+    await _fondoDao.guardar(corregido);
+    return corregido;
+  }
 
   /// Las cajas, de la más nueva a la más vieja.
   Future<List<Jornada>> leerJornadas() => _jornadaDao.listar();
 
+  /// La base guarda las horas al milisegundo: redondeada así, la que queda
+  /// en memoria es la misma que se leería después.
+  static DateTime _alMilisegundo(DateTime d) =>
+      DateTime.fromMillisecondsSinceEpoch(d.millisecondsSinceEpoch);
+
   /// Abre una caja con el monto con que empieza.
   ///
-  /// Si se contaron los billetes, tienen que sumar ese monto: es de donde la
-  /// app parte para decir, al cerrar, cuántos de cada uno debería haber.
+  /// Antes hay que haber contado el efectivo del negocio: lo de la caja sale
+  /// de ahí. Si se contaron los billetes, tienen que sumar el monto: es de
+  /// donde la app parte para decir, al cerrar, cuántos de cada uno debería
+  /// haber.
   Future<Jornada> abrirCaja({
     required int apertura,
     required InicioCaja inicio,
@@ -66,6 +128,11 @@ class RepositorioMovimientos {
     }
     if (responsable.trim().isEmpty) {
       throw ArgumentError('Escribe quién queda a cargo de la caja.');
+    }
+    if (await leerFondo() == null) {
+      throw ArgumentError(
+        'Primero cuenta el efectivo del negocio: de ahí sale lo de la caja.',
+      );
     }
     final negocio = await leerNegocio();
     final ahora = DateTime.now();

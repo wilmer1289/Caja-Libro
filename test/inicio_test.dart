@@ -12,6 +12,7 @@ import 'package:mi_caja/datos/repositorio/repositorio_movimientos.dart';
 import 'package:mi_caja/dominio/boleta.dart';
 import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
+import 'package:mi_caja/dominio/fondo.dart';
 import 'package:mi_caja/dominio/jornada.dart';
 import 'package:mi_caja/dominio/pcge.dart';
 import 'package:mi_caja/dominio/enums.dart';
@@ -58,6 +59,49 @@ class RepositorioFalso extends RepositorioMovimientos {
 
   /// Las cajas, de la más vieja a la más nueva.
   final cajas = <Jornada>[];
+
+  /// El efectivo del negocio; null mientras no se cuente.
+  FondoNegocio? fondo;
+
+  @override
+  Future<FondoNegocio?> leerFondo() async => fondo;
+
+  @override
+  Future<FondoNegocio> contarFondo({
+    required Conteo conteo,
+    required String usuario,
+  }) async => fondo = FondoNegocio(
+    conteo: conteo,
+    contadoEn: DateTime.now(),
+    usuario: usuario,
+  );
+
+  @override
+  Future<FondoNegocio> corregirFondo({
+    required Conteo conteo,
+    required String usuario,
+  }) async =>
+      fondo = fondo!.corregir(conteo, usuario: usuario, en: DateTime.now());
+
+  /// Una caja abierta desde hace un rato, para registrar en efectivo.
+  void abrirUnaCaja() {
+    fondo ??= FondoNegocio(
+      conteo: const Conteo({10000: 5}),
+      contadoEn: DateTime.now().subtract(const Duration(hours: 3)),
+      usuario: 'usuario',
+    );
+    cajas.add(
+      Jornada(
+        id: 'caja-${cajas.length + 1}',
+        numero: cajas.length + 1,
+        abiertaEn: DateTime.now().subtract(const Duration(hours: 2)),
+        apertura: 10000,
+        inicio: InicioCaja.primera,
+        responsable: 'Ana Ruiz',
+        usuario: 'usuario',
+      ),
+    );
+  }
 
   @override
   Future<List<Jornada>> leerJornadas() async => List.of(cajas.reversed);
@@ -688,7 +732,7 @@ void main() {
     'en efectivo siempre se anota con cuánto pagó: sin billetes no guarda',
     (tester) async {
       escritorio(tester);
-      final repo = RepositorioFalso(variados);
+      final repo = RepositorioFalso(variados)..abrirUnaCaja();
       await tester.pumpWidget(armar(variados, repo: repo));
       await tester.pumpAndSettle();
       await abrirRegistro(tester, 'Entró');
@@ -779,6 +823,15 @@ void main() {
     (w) => w is TextField && w.decoration?.hintText == pista,
   );
 
+  /// Toca algo que puede estar más abajo en la página: primero lo trae a la
+  /// vista.
+  Future<void> tocar(WidgetTester tester, Finder algo) async {
+    await tester.ensureVisible(algo);
+    await tester.pumpAndSettle();
+    await tester.tap(algo);
+    await tester.pumpAndSettle();
+  }
+
   testWidgets(
     'la caja se abre con un monto, el efectivo entra solo y se cierra contando',
     (tester) async {
@@ -789,14 +842,36 @@ void main() {
       await tester.tap(find.text('Arqueo de caja'));
       await tester.pumpAndSettle();
 
-      // La primera vez: con cuánto empieza y quién queda a cargo.
-      expect(find.text('Abre tu primera caja'), findsOneWidget);
-      await tester.enterText(campo('0.00'), '100');
-      await tester.enterText(campo('Quién queda a cargo'), 'Ana Ruiz');
-      await tester.tap(find.text('Abrir caja'));
+      // La primera vez, antes que nada: cuánto efectivo tiene el negocio,
+      // billete por billete. Cinco de S/ 100.
+      expect(
+        find.text('Primero, cuenta el efectivo del negocio'),
+        findsOneWidget,
+      );
+      expect(find.text('Abre tu primera caja'), findsNothing);
+      await tester.enterText(campo('0').at(1), '5'); // S/ 100
       await tester.pumpAndSettle();
+      expect(find.text('S/ 500.00'), findsWidgets);
+      await tocar(tester, find.text('Guardar el efectivo del negocio'));
+      expect(repo.fondo!.total, 50000);
+
+      // Después se abre la caja: lo que se pone sale de ahí.
+      expect(find.text('Abre tu primera caja'), findsOneWidget);
+      expect(find.text('Tienes en total'), findsOneWidget);
+      // No quedó nada en una caja anterior: no hay "seguir".
+      expect(find.text('Seguir con lo que quedó'), findsNothing);
+      await tester.enterText(campo('0.00'), '100');
+      await tester.pumpAndSettle();
+      expect(find.text('Quedan guardados S/ 400.00.'), findsOneWidget);
+      await tester.enterText(campo('Quién queda a cargo'), 'Ana Ruiz');
+      await tocar(tester, find.text('Abrir caja'));
 
       expect(find.text('CAJA N° 1 ABIERTA'), findsOneWidget);
+      // Al costado, el efectivo del negocio repartido: 100 en la caja y 400
+      // guardados.
+      expect(find.text('Efectivo del negocio'), findsOneWidget);
+      expect(find.text('En la caja N° 1 (abierta)'), findsOneWidget);
+      expect(find.text('S/ 400.00'), findsWidgets);
       expect(find.text('Debería haber en la caja'), findsOneWidget);
       // Lo registrado antes de abrir no es de esta caja.
       expect(find.textContaining('Todavía sin movimientos'), findsOneWidget);
@@ -813,8 +888,10 @@ void main() {
       await tester.tap(find.text('Guardar entrada'));
       await tester.pumpAndSettle();
 
-      expect(find.text('S/ 120.00'), findsOneWidget);
+      expect(find.text('S/ 120.00'), findsWidgets);
       expect(find.text('+ S/ 20.00'), findsOneWidget);
+      // El total del negocio sube con lo que entró.
+      expect(find.text('S/ 520.00'), findsOneWidget);
 
       // Se cierra contando: uno de 100 y uno de 20. Cuadra.
       await tester.tap(find.text('Cerrar caja'));
@@ -825,8 +902,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('La caja cuadra'), findsOneWidget);
 
-      await tester.tap(find.text('Cerrar caja y ver el acta'));
-      await tester.pumpAndSettle();
+      await tocar(tester, find.text('Cerrar caja y ver el acta'));
       expect(find.text('Caja N° 1 cerrada'), findsOneWidget);
       expect(find.text('Terminaste con'), findsOneWidget);
 
@@ -850,6 +926,13 @@ void main() {
       escritorio(tester);
       final repo = RepositorioFalso(variados);
       final ayer = DateTime.now().subtract(const Duration(days: 1));
+      // El negocio tenía S/ 300: la caja de ayer empezó con 100 y cerró con
+      // lo mismo; quedaron 200 guardados.
+      repo.fondo = FondoNegocio(
+        conteo: const Conteo({10000: 3}),
+        contadoEn: ayer.subtract(const Duration(hours: 11)),
+        usuario: 'usuario',
+      );
       repo.cajas.add(
         Jornada(
           id: 'ayer',
@@ -872,21 +955,27 @@ void main() {
 
       expect(find.text('Seguir con lo que quedó'), findsOneWidget);
       expect(find.text('Empezar de cero'), findsOneWidget);
-      expect(find.text('Otro monto'), findsOneWidget);
+      expect(find.text('Con otro monto'), findsOneWidget);
+      // Lo que hay para abrir: 100 en la caja y 200 guardados.
+      expect(find.text('Quedó en la caja'), findsOneWidget);
+      expect(
+        find.text('Lo sacas de lo que tienes: hasta S/ 300.00'),
+        findsOneWidget,
+      );
 
       await tester.tap(find.text('Empezar de cero'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Abrir caja'));
-      await tester.pumpAndSettle();
+      await tocar(tester, find.text('Abrir caja'));
 
       final nueva = repo.cajas.last;
       expect(nueva.numero, 2);
       expect(nueva.apertura, 0);
       expect(nueva.inicio, InicioCaja.desdeCero);
       expect(nueva.apartado, 10000);
-      // El resumen de la semana ya la cuenta, con lo guardado aparte.
+      // Los 100 de la caja pasaron a lo guardado: 300 guardados, 0 en caja.
       expect(find.text('Tus cajas'), findsOneWidget);
-      expect(find.text('Guardado aparte'), findsOneWidget);
+      expect(find.text('Guardado aparte'), findsWidgets);
+      expect(find.text('S/ 300.00'), findsWidgets);
     },
   );
 
@@ -898,9 +987,106 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('La caja está cerrada'), findsOneWidget);
+    expect(
+      find.text('Primero cuenta el efectivo del negocio y ábrela'),
+      findsOneWidget,
+    );
     await tester.tap(find.widgetWithText(FilledButton, 'Abrir caja'));
     await tester.pumpAndSettle();
-    expect(find.text('Abre tu primera caja'), findsOneWidget);
+    expect(
+      find.text('Primero, cuenta el efectivo del negocio'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'con la caja cerrada no se registra en efectivo y lleva a abrirla',
+    (tester) async {
+      escritorio(tester);
+      final repo = RepositorioFalso(variados);
+      await tester.pumpWidget(armar(variados, repo: repo));
+      await tester.pumpAndSettle();
+      await abrirRegistro(tester, 'Entró');
+
+      await tester.tap(chip('Efectivo'));
+      await tester.tap(chip('Ventas'));
+      await tester.enterText(find.byType(TextField).first, '20');
+      await tester.pumpAndSettle();
+
+      FilledButton boton(String texto) => tester.widget<FilledButton>(
+        find.ancestor(
+          of: find.text(texto),
+          matching: find.byWidgetPredicate((w) => w is FilledButton),
+        ),
+      );
+
+      // No se puede seguir.
+      expect(find.textContaining('primero ábrela'), findsOneWidget);
+      expect(boton('Continuar').onPressed, isNull);
+      expect(
+        find.text('Abre la caja para registrar en efectivo'),
+        findsOneWidget,
+      );
+
+      // Con Yape sí: no pasa por la caja.
+      await tester.tap(chip('Yape / Plin'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('primero ábrela'), findsNothing);
+      expect(boton('Guardar entrada').onPressed, isNotNull);
+
+      // En efectivo, "Abrir la caja" cierra el formulario y lleva al arqueo.
+      await tester.tap(chip('Efectivo'));
+      await tester.pumpAndSettle();
+      await tocar(tester, find.text('Abrir la caja'));
+      expect(find.byType(RegistroHoja), findsNothing);
+      expect(
+        find.text('Primero, cuenta el efectivo del negocio'),
+        findsOneWidget,
+      );
+      expect(repo.registrados, isEmpty);
+    },
+  );
+
+  testWidgets('el conteo del negocio queda bloqueado, pero se corrige', (
+    tester,
+  ) async {
+    escritorio(tester);
+    final repo = RepositorioFalso(variados)
+      ..fondo = FondoNegocio(
+        conteo: const Conteo({10000: 5, 5000: 10}),
+        contadoEn: DateTime.now().subtract(const Duration(hours: 1)),
+        usuario: 'usuario',
+      );
+    await tester.pumpWidget(armar(variados, repo: repo));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Arqueo de caja'));
+    await tester.pumpAndSettle();
+
+    // Contado y bloqueado: ya no se pide, se muestra.
+    expect(find.text('Primero, cuenta el efectivo del negocio'), findsNothing);
+    expect(find.text('Efectivo del negocio'), findsOneWidget);
+    expect(find.text('Bloqueado'), findsOneWidget);
+    expect(find.text('5 × S/ 100 · 10 × S/ 50'), findsOneWidget);
+    expect(find.text('S/ 1,000.00'), findsWidgets);
+
+    // Contó mal: eran nueve de 50, no diez.
+    await tocar(tester, find.text('Corregir conteo'));
+    expect(find.text('Corregir el efectivo del negocio'), findsOneWidget);
+    final fichas = find.descendant(
+      of: find.byType(Dialog),
+      matching: campo('0'),
+    );
+    await tester.enterText(fichas.at(2), '9'); // S/ 50
+    await tester.pumpAndSettle();
+    expect(find.text('− S/ 50.00'), findsOneWidget);
+    await tester.tap(find.text('Guardar corrección'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Dialog), findsNothing);
+    expect(repo.fondo!.total, 95000);
+    expect(repo.fondo!.corregido, isTrue);
+    expect(find.text('S/ 950.00'), findsWidgets);
+    expect(find.textContaining('Corregido'), findsOneWidget);
   });
 
   testWidgets('en el celular las secciones salen por la derecha', (

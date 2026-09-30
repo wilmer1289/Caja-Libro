@@ -43,7 +43,7 @@ class DashboardPagina extends StatelessWidget {
     if (estado.vacio &&
         estado.negocio.saldoInicialCaja == 0 &&
         estado.negocio.saldoInicialBanco == 0) {
-      return const _Bienvenida();
+      return _Bienvenida(onIrA: onIrA);
     }
 
     final resumen = estado.resumen;
@@ -66,6 +66,7 @@ class DashboardPagina extends StatelessWidget {
             Aparece(
               child: _CajaDelDia(
                 caja: estado.cajaAbierta,
+                faltaContar: estado.fondo == null,
                 onIr: onIrA == null ? null : () => onIrA!(Seccion.iArqueo),
               ),
             ),
@@ -195,9 +196,12 @@ class _FaltaPerfil extends StatelessWidget {
 /// haber, o cerrada, con el botón para abrirla. Es lo primero que se hace al
 /// llegar, así que va arriba de todo.
 class _CajaDelDia extends StatelessWidget {
-  const _CajaDelDia({required this.caja, this.onIr});
+  const _CajaDelDia({required this.caja, required this.faltaContar, this.onIr});
 
   final Jornada? caja;
+
+  /// Todavía no se contó el efectivo del negocio: es lo primero.
+  final bool faltaContar;
   final VoidCallback? onIr;
 
   @override
@@ -255,7 +259,9 @@ class _CajaDelDia extends StatelessWidget {
                       abierta
                           ? 'Debería haber ${Formato.soles(c.esperado / 100)} '
                                 'en efectivo'
-                          : 'Ábrela para que el efectivo del día entre solo',
+                          : faltaContar
+                          ? 'Primero cuenta el efectivo del negocio y ábrela'
+                          : 'Ábrela para registrar en efectivo',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -1033,7 +1039,9 @@ class _Recientes extends StatelessWidget {
 /// Primera vez: en vez de números en cero, los personajes del login dando la
 /// bienvenida. Es la misma cara que vio al entrar, y le dice qué hacer.
 class _Bienvenida extends StatelessWidget {
-  const _Bienvenida();
+  const _Bienvenida({this.onIrA});
+
+  final ValueChanged<int>? onIrA;
 
   @override
   Widget build(BuildContext context) {
@@ -1107,7 +1115,11 @@ class _Bienvenida extends StatelessWidget {
   Future<void> _registrarPrimero(BuildContext context) async {
     // Lleva directo al caso más común de una bodega: una venta.
     final mensajero = ScaffoldMessenger.of(context);
-    final guardado = await RegistroHoja.abrir(context, Tipo.entro);
+    final guardado = await RegistroHoja.abrir(
+      context,
+      Tipo.entro,
+      onAbrirCaja: onIrA == null ? null : () => onIrA!(Seccion.iArqueo),
+    );
     if (guardado != null) {
       mensajero.showSnackBar(
         const SnackBar(content: Text('¡Listo! Tu primera venta quedó anotada')),

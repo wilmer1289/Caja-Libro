@@ -31,9 +31,18 @@ import 'paso_efectivo.dart';
 /// completa el resto. Si todo eso estuviera siempre a la vista, el formulario
 /// de todos los días tendría nueve campos en lugar de cuatro.
 class RegistroHoja extends StatefulWidget {
-  const RegistroHoja({super.key, required this.tipo, this.enDialogo = false});
+  const RegistroHoja({
+    super.key,
+    required this.tipo,
+    this.enDialogo = false,
+    this.onAbrirCaja,
+  });
 
   final Tipo tipo;
+
+  /// Lleva a abrir la caja. En efectivo no se registra sin una caja
+  /// abierta, y el aviso ofrece ir directo a abrirla.
+  final VoidCallback? onAbrirCaja;
 
   /// En escritorio el formulario va en una ventana centrada, no en una hoja
   /// que sube desde abajo: esa es la forma del celular, y en un monitor de
@@ -42,7 +51,11 @@ class RegistroHoja extends StatefulWidget {
 
   /// Devuelve el movimiento guardado, con sus números, o null si se cerró sin
   /// guardar.
-  static Future<Movimiento?> abrir(BuildContext context, Tipo tipo) {
+  static Future<Movimiento?> abrir(
+    BuildContext context,
+    Tipo tipo, {
+    VoidCallback? onAbrirCaja,
+  }) {
     final esEscritorio = MediaQuery.sizeOf(context).width >= 900;
 
     if (!esEscritorio) {
@@ -58,7 +71,7 @@ class RegistroHoja extends StatefulWidget {
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * 0.94,
           ),
-          child: RegistroHoja(tipo: tipo),
+          child: RegistroHoja(tipo: tipo, onAbrirCaja: onAbrirCaja),
         ),
       );
     }
@@ -86,7 +99,11 @@ class RegistroHoja extends StatefulWidget {
                 elevation: 24,
                 shadowColor: const Color(0x552A1A0C),
                 borderRadius: BorderRadius.circular(24),
-                child: RegistroHoja(tipo: tipo, enDialogo: true),
+                child: RegistroHoja(
+                  tipo: tipo,
+                  enDialogo: true,
+                  onAbrirCaja: onAbrirCaja,
+                ),
               ),
             ),
           ),
@@ -303,6 +320,16 @@ class _RegistroHojaState extends State<RegistroHoja> {
         _medio == MedioPago.efectivo;
   }
 
+  /// El efectivo entra y sale de la caja del día: con la caja cerrada no
+  /// hay dónde ponerlo, y no deja seguir hasta abrirla o cambiar el medio.
+  bool get _bloqueaCajaCerrada =>
+      _enEfectivo && context.read<EstadoCaja>().cajaAbierta == null;
+
+  void _irAAbrirCaja() {
+    Navigator.of(context).pop();
+    widget.onAbrirCaja?.call();
+  }
+
   Future<void> _elegirFecha() async {
     final elegida = await showDatePicker(
       context: context,
@@ -343,7 +370,8 @@ class _RegistroHojaState extends State<RegistroHoja> {
         _errorCuenta == null &&
         _errorNombre == null &&
         _errorDocumento == null &&
-        !_bloqueaBancarizacion;
+        !_bloqueaBancarizacion &&
+        !_bloqueaCajaCerrada;
   }
 
   void _continuar() {
@@ -626,6 +654,15 @@ class _RegistroHojaState extends State<RegistroHoja> {
       children: [
         const _Etiqueta('¿Cómo se pagó?'),
         _Medios(elegido: _medio, onElegir: (m) => setState(() => _medio = m)),
+        if (_bloqueaCajaCerrada) ...[
+          const SizedBox(height: 10),
+          // El botón para abrirla va en el pie, que siempre está a la vista.
+          const _Aviso(
+            'La caja está cerrada y el efectivo entra y sale de ella: '
+            'primero ábrela, o elige otro medio de pago.',
+            bloquea: true,
+          ),
+        ],
       ],
     );
 
@@ -742,7 +779,6 @@ class _RegistroHojaState extends State<RegistroHoja> {
     Widget pasoPago() => PasoEfectivo(
       tipo: widget.tipo,
       monto: centavos ?? 0,
-      cajaAbierta: context.watch<EstadoCaja>().cajaAbierta != null,
       entregado: _entregado,
       vuelto: _vuelto,
       onEntregado: (c) => setState(() {
@@ -951,11 +987,12 @@ class _RegistroHojaState extends State<RegistroHoja> {
   /// El pie: volver o cancelar a la izquierda; seguir, o elegir qué imprimir
   /// y guardar, a la derecha.
   Widget _pie(Color color, bool entro, {bool compacto = false}) {
-    final hayError = _errorGuardar != null || _bloqueaBancarizacion;
+    final bloqueado = _bloqueaBancarizacion || _bloqueaCajaCerrada;
+    final hayError = _errorGuardar != null || bloqueado;
 
     final siguiente = _ultimoPaso
         ? FilledButton.icon(
-            onPressed: _guardando || _bloqueaBancarizacion ? null : _guardar,
+            onPressed: _guardando || bloqueado ? null : _guardar,
             style: FilledButton.styleFrom(
               backgroundColor: color,
               minimumSize: const Size(0, 52),
@@ -983,7 +1020,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
             ),
           )
         : FilledButton.icon(
-            onPressed: _bloqueaBancarizacion ? null : _continuar,
+            onPressed: bloqueado ? null : _continuar,
             style: FilledButton.styleFrom(
               backgroundColor: color,
               minimumSize: const Size(0, 52),
@@ -1033,7 +1070,38 @@ class _RegistroHojaState extends State<RegistroHoja> {
           )
         : null;
 
-    final mensaje = hayError
+    final mensaje = _errorGuardar == null && _bloqueaCajaCerrada
+        ? Row(
+            children: [
+              const Icon(Icons.lock_rounded, size: 17, color: Tokens.salio),
+              const SizedBox(width: 7),
+              const Flexible(
+                child: Text(
+                  'Abre la caja para registrar en efectivo',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: Tokens.salio,
+                  ),
+                ),
+              ),
+              if (widget.onAbrirCaja != null) ...[
+                const SizedBox(width: 6),
+                TextButton.icon(
+                  onPressed: _irAAbrirCaja,
+                  style: TextButton.styleFrom(
+                    foregroundColor: Tokens.salio,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                  icon: const Icon(Icons.lock_open_rounded, size: 17),
+                  label: const Text('Abrir la caja'),
+                ),
+              ],
+            ],
+          )
+        : hayError
         ? Row(
             children: [
               const Icon(

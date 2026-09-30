@@ -6,10 +6,12 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 
 import 'core/tema.dart';
+import 'datos/repositorio/repositorio_demo.dart';
 import 'datos/repositorio/repositorio_movimientos.dart';
 import 'dominio/pcge.dart';
 import 'estado/estado_caja.dart';
 import 'ui/puerta.dart';
+import 'ui/widgets/banner_demo.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +41,13 @@ class MiCajaApp extends StatelessWidget {
     return ChangeNotifierProvider(
       // El repositorio se arma acá y baja por el árbol: las pantallas reciben
       // el estado ya listo y nunca construyen su propia conexión a la base.
-      create: (_) => EstadoCaja(RepositorioMovimientos()),
+      //
+      // En la web no hay SQLite ni sistema de archivos, así que ahí corre el
+      // repositorio de demostración: los mismos datos de ejemplo para
+      // cualquiera que abra el link, que nunca tocan una base real y se
+      // pierden al recargar la página.
+      create: (_) =>
+          EstadoCaja(kIsWeb ? RepositorioDemo() : RepositorioMovimientos()),
       child: MaterialApp(
         title: 'Mi Caja',
         debugShowCheckedModeBanner: false,
@@ -51,7 +59,14 @@ class MiCajaApp extends StatelessWidget {
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,
         ],
-        home: const Puerta(),
+        home: kIsWeb
+            ? const Column(
+                children: [
+                  BannerDemo(),
+                  Expanded(child: Puerta()),
+                ],
+              )
+            : const Puerta(),
       ),
     );
   }

@@ -557,7 +557,7 @@ class Documentos {
           ('QUEDÓ (ENTRÓ − SALIÓ)', _monto(r.neto)),
           ('FALTANTES', _monto(r.faltantes)),
           ('SOBRANTES', _monto(r.sobrantes)),
-          ('GUARDADO APARTE', _monto(r.apartado)),
+          ('SE GUARDÓ AL ABRIR', _monto(r.apartado)),
         ]),
         const EspacioDoc(14),
         TablaDoc(

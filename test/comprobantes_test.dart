@@ -7,6 +7,7 @@ import 'package:mi_caja/datos/db/base_datos.dart';
 import 'package:mi_caja/datos/db/esquema.dart';
 import 'package:mi_caja/datos/export/exportador_pdf.dart';
 import 'package:mi_caja/datos/local/categoria_dao.dart';
+import 'package:mi_caja/datos/local/fondo_dao.dart';
 import 'package:mi_caja/datos/local/jornada_dao.dart';
 import 'package:mi_caja/datos/local/movimiento_dao.dart';
 import 'package:mi_caja/datos/local/negocio_dao.dart';
@@ -15,11 +16,13 @@ import 'package:mi_caja/dominio/boleta.dart';
 import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
 import 'package:mi_caja/dominio/enums.dart';
+import 'package:mi_caja/dominio/fondo.dart';
 import 'package:mi_caja/dominio/jornada.dart';
 import 'package:mi_caja/dominio/movimiento.dart';
 import 'package:mi_caja/dominio/negocio.dart';
 import 'package:mi_caja/dominio/pcge.dart';
 import 'package:mi_caja/dominio/recibo.dart';
+import 'package:mi_caja/estado/estado_caja.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Recibo interno, boleta de control interno, billetes y vuelto, y la caja
@@ -49,6 +52,7 @@ void main() {
       negocioDao: NegocioDao(database: db),
       categoriaDao: CategoriaDao(database: db),
       jornadaDao: JornadaDao(database: db),
+      fondoDao: FondoDao(database: db),
     );
     Categoria.registrarPropias(const []);
   });
@@ -393,6 +397,10 @@ void main() {
     });
 
     test('se abre una sola a la vez, numerada, y se cierra', () async {
+      await repo.contarFondo(
+        conteo: const Conteo({10000: 5}),
+        usuario: 'usuario',
+      );
       final primera = await repo.abrirCaja(
         apertura: 10000,
         inicio: InicioCaja.primera,
@@ -434,6 +442,10 @@ void main() {
     });
 
     test('los billetes contados al abrir tienen que sumar el monto', () async {
+      await repo.contarFondo(
+        conteo: const Conteo({10000: 5}),
+        usuario: 'usuario',
+      );
       await expectLater(
         repo.abrirCaja(
           apertura: 10000,
@@ -444,6 +456,252 @@ void main() {
         ),
         throwsA(isA<ArgumentError>()),
       );
+    });
+
+    test('sin contar el efectivo del negocio no se abre la caja', () async {
+      await expectLater(
+        repo.abrirCaja(
+          apertura: 10000,
+          inicio: InicioCaja.primera,
+          responsable: 'Ana Ruiz',
+          usuario: 'usuario',
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => '${e.message}',
+            'mensaje',
+            contains('cuenta el efectivo del negocio'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'el efectivo del negocio se cuenta una vez, cerrado, y se corrige',
+      () async {
+        expect(await repo.leerFondo(), isNull);
+        final fondo = await repo.contarFondo(
+          conteo: const Conteo({10000: 5, 5000: 10}),
+          usuario: 'usuario',
+        );
+        expect(fondo.total, 100000);
+        expect((await repo.leerFondo())!.conteo, fondo.conteo);
+
+        // Una segunda vez no: se corrige.
+        await expectLater(
+          repo.contarFondo(conteo: const Conteo({10000: 1}), usuario: 'x'),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        final caja = await repo.abrirCaja(
+          apertura: 20000,
+          inicio: InicioCaja.primera,
+          responsable: 'Ana Ruiz',
+          usuario: 'usuario',
+        );
+        // Se corrige aun con la caja abierta: el conteo es de antes.
+        final corregido = await repo.corregirFondo(
+          conteo: const Conteo({10000: 5, 5000: 9}),
+          usuario: 'Ana',
+        );
+        expect(corregido.total, 95000);
+        expect(corregido.contadoEn, fondo.contadoEn);
+        expect(corregido.corregidoPor, 'Ana');
+        expect((await repo.leerFondo())!.corregido, isTrue);
+
+        // La caja cierra con 300: un conteo nuevo no puede ser menos que eso.
+        await repo.guardarCierre(
+          caja.cerrar(
+            cerradaEn: DateTime.now(),
+            movimientos: const [],
+            conteo: const Conteo({10000: 3}),
+          ),
+        );
+        expect(
+          FondoNegocio.problemaCon(
+            const Conteo({10000: 2}),
+            await repo.leerJornadas(),
+          ),
+          contains('cerró con'),
+        );
+      },
+    );
+
+    test('con una caja abierta no se cuenta el efectivo del negocio', () {
+      expect(
+        FondoNegocio.problemaCon(const Conteo({10000: 5}), [
+          cajaAbierta(DateTime.now()),
+        ]),
+        contains('Cierra la caja'),
+      );
+    });
+
+    group('el reparto entre la caja y lo guardado', () {
+      final contado = DateTime(2026, 9, 25, 7);
+      final fondo = FondoNegocio(
+        conteo: const Conteo({10000: 10}), // S/ 1,000
+        contadoEn: contado,
+        usuario: 'usuario',
+      );
+
+      Jornada caja(
+        int n,
+        int dia,
+        int apertura, {
+        int anterior = 0,
+        int? cierre,
+        InicioCaja inicio = InicioCaja.otroMonto,
+      }) {
+        final abierta = Jornada(
+          id: 'c$n',
+          numero: n,
+          abiertaEn: DateTime(2026, 9, dia, 8),
+          apertura: apertura,
+          inicio: inicio,
+          anterior: anterior,
+          responsable: 'Ana',
+          usuario: 'usuario',
+        );
+        return cierre == null
+            ? abierta
+            : abierta.cerrar(
+                cerradaEn: DateTime(2026, 9, dia, 20),
+                movimientos: const [],
+                conteo: Conteo.sugerir(cierre),
+              );
+      }
+
+      test('sin cajas, todo está guardado', () {
+        final e = EfectivoNegocio.de(fondo, const []);
+        expect(e.guardado, 100000);
+        expect(e.enCaja, 0);
+        expect(e.total, 100000);
+      });
+
+      test('lo que se pone en la caja sale de lo guardado', () {
+        // Abre con 300 de los 1,000; entran 200 y cierra con 500.
+        final c1 = caja(
+          1,
+          25,
+          30000,
+          cierre: 50000,
+          inicio: InicioCaja.primera,
+        );
+        final e1 = EfectivoNegocio.de(fondo, [c1]);
+        expect(e1.guardado, 70000);
+        expect(e1.enCaja, 50000);
+        expect(e1.total, 120000);
+
+        // Seguir con lo que quedó: lo guardado no se toca.
+        final seguir = caja(
+          2,
+          26,
+          50000,
+          anterior: 50000,
+          inicio: InicioCaja.continua,
+        );
+        final e2 = EfectivoNegocio.de(fondo, [c1, seguir]);
+        expect(e2.guardado, 70000);
+        expect(e2.enCaja, 50000);
+        expect(e2.caja!.abierta, isTrue);
+
+        // De cero: los 500 pasan a lo guardado.
+        final cero = caja(
+          2,
+          26,
+          0,
+          anterior: 50000,
+          inicio: InicioCaja.desdeCero,
+        );
+        final e3 = EfectivoNegocio.de(fondo, [c1, cero]);
+        expect(e3.guardado, 120000);
+        expect(e3.enCaja, 0);
+
+        // Otro monto: 800 salen de los 1,200 que hay entre las dos.
+        final otro = caja(2, 26, 80000, anterior: 50000);
+        final e4 = EfectivoNegocio.de(fondo, [otro, c1]);
+        expect(e4.guardado, 40000);
+        expect(e4.enCaja, 80000);
+        expect(e4.total, 120000);
+      });
+
+      test('con más de lo que hay, lo de más entra de afuera', () {
+        final c1 = caja(1, 25, 150000, inicio: InicioCaja.primera);
+        final e = EfectivoNegocio.de(fondo, [c1]);
+        expect(e.guardado, 0);
+        expect(e.enCaja, 150000);
+      });
+
+      test('corregir el conteo corrige lo guardado de ahí en adelante', () {
+        final c1 = caja(
+          1,
+          25,
+          30000,
+          cierre: 30000,
+          inicio: InicioCaja.primera,
+        );
+        final corregido = fondo.corregir(
+          const Conteo({10000: 9}),
+          usuario: 'Ana',
+          en: DateTime(2026, 9, 27),
+        );
+        expect(EfectivoNegocio.de(fondo, [c1]).guardado, 70000);
+        expect(EfectivoNegocio.de(corregido, [c1]).guardado, 60000);
+      });
+
+      test('las cajas de antes del conteo no lo reparten', () {
+        // Cerró con 100 antes de contar: esos 100 son parte de lo contado.
+        final vieja =
+            Jornada(
+              id: 'v',
+              numero: 1,
+              abiertaEn: DateTime(2026, 9, 24, 8),
+              apertura: 10000,
+              inicio: InicioCaja.primera,
+              responsable: 'Ana',
+              usuario: 'usuario',
+            ).cerrar(
+              cerradaEn: DateTime(2026, 9, 24, 20),
+              movimientos: const [],
+              conteo: const Conteo({10000: 1}),
+            );
+        final e = EfectivoNegocio.de(fondo, [vieja]);
+        expect(e.enCaja, 10000);
+        expect(e.guardado, 90000);
+        expect(e.total, 100000);
+      });
+    });
+
+    test('sin caja abierta la app no registra en efectivo', () async {
+      final estado = EstadoCaja(repo);
+      await estado.cargar();
+
+      Future<Movimiento> cobrar(MedioPago medio) => estado.registrar(
+        tipo: Tipo.entro,
+        centavos: 1000,
+        categoriaId: 'ventas',
+        concepto: '',
+        medio: medio,
+        fecha: DateTime.now(),
+      );
+
+      await expectLater(
+        cobrar(MedioPago.efectivo),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Lo que no pasa por la caja, sí.
+      expect((await cobrar(MedioPago.yape)).medio, MedioPago.yape);
+
+      await estado.contarFondo(const Conteo({10000: 1}), usuario: 'usuario');
+      await estado.abrirCaja(
+        apertura: 0,
+        inicio: InicioCaja.primera,
+        responsable: 'Ana',
+        usuario: 'usuario',
+      );
+      final cobrado = await cobrar(MedioPago.efectivo);
+      expect(estado.movimientosDeCaja(estado.cajaAbierta!), [cobrado]);
+      expect(estado.efectivoNegocio!.total, 11000);
     });
 
     test('el resumen junta las cajas del período', () {
@@ -524,6 +782,9 @@ void main() {
       expect(negocio.razonSocial, 'LIBERTAD SA');
       expect(negocio.tesorero, '');
       expect(await JornadaDao(database: nueva).listar(), isEmpty);
+      // La v6 trae la tabla del efectivo del negocio, vacía: se cuenta al
+      // abrir la próxima caja.
+      expect(await FondoDao(database: nueva).leer(), isNull);
       await nueva.close();
     } finally {
       await carpeta.delete(recursive: true);

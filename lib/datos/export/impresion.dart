@@ -1,6 +1,6 @@
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:printing/printing.dart';
 
 import 'abrir_archivo.dart';
@@ -19,7 +19,8 @@ class Impresion {
 
   /// Guarda el PDF en Documentos\Mi Caja y devuelve la ruta. En el celular,
   /// además abre la hoja de compartir: "descargar" ahí significa mandarlo por
-  /// WhatsApp o guardarlo en el teléfono.
+  /// WhatsApp o guardarlo en el teléfono. En la web no hay carpeta de
+  /// documentos: el navegador lo descarga solo, como cualquier archivo.
   static Future<String> Function(Uint8List pdf, String nombre) descargar =
       _descargar;
 
@@ -27,6 +28,10 @@ class Impresion {
       Printing.layoutPdf(onLayout: (_) async => pdf, name: nombre);
 
   static Future<String> _descargar(Uint8List pdf, String nombre) async {
+    if (kIsWeb) {
+      await Printing.sharePdf(bytes: pdf, filename: nombre);
+      return 'tu carpeta de descargas';
+    }
     final ruta = await ExportadorPdf.guardar(pdf, nombre);
     if (Platform.isAndroid || Platform.isIOS) {
       await Printing.sharePdf(bytes: pdf, filename: nombre);

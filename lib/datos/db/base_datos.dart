@@ -44,6 +44,7 @@ class BaseDatos {
       await db.execute(Esquema.crearNegocio);
       await db.execute(Esquema.crearCategorias);
       await db.execute(Esquema.crearJornadas);
+      await db.execute(Esquema.crearFondo);
       for (final indice in Esquema.indices) {
         await db.execute(indice);
       }
@@ -68,6 +69,9 @@ class BaseDatos {
           await db.execute(paso);
         }
       }
+      // v6 sólo agrega una tabla. Quien ya tenía cajas cuenta el efectivo
+      // del negocio la próxima vez que abra una.
+      if (desde < 6) await db.execute(Esquema.crearFondo);
     },
   );
 

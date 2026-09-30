@@ -7,6 +7,7 @@ import '../datos/repositorio/repositorio_movimientos.dart';
 import '../dominio/categoria.dart';
 import '../dominio/efectivo.dart';
 import '../dominio/enums.dart';
+import '../dominio/fondo.dart';
 import '../dominio/jornada.dart';
 import '../dominio/mayor.dart';
 import '../dominio/movimiento.dart';
@@ -25,6 +26,7 @@ class EstadoCaja extends ChangeNotifier {
 
   List<Movimiento> _movimientos = const [];
   List<Jornada> _jornadas = const [];
+  FondoNegocio? _fondo;
   Negocio _negocio = Negocio.vacio;
   bool _cargando = true;
   String? _error;
@@ -124,6 +126,33 @@ class EstadoCaja extends ChangeNotifier {
 
   ResumenCajas resumenCajas(PeriodoCajas periodo) =>
       ResumenCajas.de(cajas, periodo);
+
+  /// El efectivo del negocio tal como se contó, o null si falta contarlo.
+  FondoNegocio? get fondo => _fondo;
+
+  /// Cuánto hay en la caja y cuánto guardado aparte, ahora. Null mientras no
+  /// se cuente el efectivo del negocio.
+  EfectivoNegocio? get efectivoNegocio {
+    final fondo = _fondo;
+    return fondo == null ? null : EfectivoNegocio.de(fondo, cajas);
+  }
+
+  /// Guarda el primer conteo del efectivo del negocio.
+  Future<FondoNegocio> contarFondo(Conteo conteo, {required String usuario}) {
+    return _conFondo(_repo.contarFondo(conteo: conteo, usuario: usuario));
+  }
+
+  /// Corrige el conteo del efectivo del negocio, si se contó mal.
+  Future<FondoNegocio> corregirFondo(Conteo conteo, {required String usuario}) {
+    return _conFondo(_repo.corregirFondo(conteo: conteo, usuario: usuario));
+  }
+
+  Future<FondoNegocio> _conFondo(Future<FondoNegocio> guardando) async {
+    final fondo = await guardando;
+    _fondo = fondo;
+    notifyListeners();
+    return fondo;
+  }
 
   /// Falta configurar el perfil: sin él no se puede emitir el Formato 1.1.
   bool get faltaPerfil => !_negocio.completo;
@@ -272,6 +301,7 @@ class EstadoCaja extends ChangeNotifier {
       _movimientos = await _repo.listar();
       _negocio = await _repo.leerNegocio();
       _jornadas = await _repo.leerJornadas();
+      _fondo = await _repo.leerFondo();
     } catch (e) {
       _error = 'No pudimos abrir tus datos. $e';
     } finally {
@@ -416,6 +446,15 @@ class EstadoCaja extends ChangeNotifier {
     String? tesorero,
     DetalleEfectivo? detalleEfectivo,
   }) async {
+    // El efectivo entra y sale de la caja del día: sin una abierta no hay
+    // dónde ponerlo. El formulario ya no deja seguir; esto es la segunda
+    // barrera. Los ajustes de un cierre no pasan por acá.
+    if (medio == MedioPago.efectivo && cajaAbierta == null) {
+      throw ArgumentError(
+        'La caja está cerrada: ábrela en "Arqueo de caja" para registrar en '
+        'efectivo.',
+      );
+    }
     final nuevo = await _repo.registrar(
       tipo: tipo,
       centavos: centavos,

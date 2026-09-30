@@ -232,7 +232,9 @@ class _Cifras extends StatelessWidget {
             ? Tokens.marcaOscura
             : Tokens.entro,
       ),
-      cifra('Guardado aparte', soles(r.apartado)),
+      // Lo que se apartó al abrir cada caja del tramo. No es lo que hay
+      // guardado hoy: eso lo dice "Efectivo del negocio".
+      cifra('Se guardó al abrir', soles(r.apartado)),
       cifra('Cajas', '${r.cajas.length} · ${r.operaciones} mov.'),
     ];
 

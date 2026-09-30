@@ -129,8 +129,8 @@ class Jornada {
   bool get haySobrante => diferencia > 0;
 
   /// Lo que quedó de la caja anterior y no se puso en esta: se guardó aparte.
-  /// Negativo si se agregó plata de afuera. La primera caja no tiene de dónde
-  /// guardar.
+  /// Negativo si se sacó de lo guardado para ponerlo en esta. La primera caja
+  /// no tiene de dónde guardar.
   int get apartado => switch (inicio) {
     InicioCaja.primera || InicioCaja.libro => 0,
     _ => anterior - apertura,
@@ -153,7 +153,7 @@ class Jornada {
         apartado > 0
             ? 'Con otro monto; se guardaron aparte ${soles(apartado)}'
             : apartado < 0
-            ? 'Con otro monto; se agregaron ${soles(-apartado)}'
+            ? 'Con otro monto; se sacaron ${soles(-apartado)} de lo guardado'
             : 'Con otro monto',
       InicioCaja.libro =>
         'Arqueo contra el saldo del libro (versión anterior de la app)',

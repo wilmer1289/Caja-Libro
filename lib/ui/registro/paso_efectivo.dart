@@ -24,14 +24,10 @@ class PasoEfectivo extends StatelessWidget {
     required this.onEntregado,
     required this.onVuelto,
     required this.onSugerirVuelto,
-    this.cajaAbierta = true,
     this.error,
   });
 
   final Tipo tipo;
-
-  /// Sin caja abierta, este efectivo no entra en ningún cierre: se avisa.
-  final bool cajaAbierta;
 
   /// El monto del movimiento, en centavos.
   final int monto;
@@ -76,7 +72,6 @@ class PasoEfectivo extends StatelessWidget {
             ),
           ],
         ),
-        if (!cajaAbierta) ...[const SizedBox(height: 12), const _CajaCerrada()],
         const SizedBox(height: 20),
         Text(
           entro ? '¿Con cuánto pagó el cliente?' : '¿Con cuánto pagaste?',
@@ -225,40 +220,6 @@ class _Resumen extends StatelessWidget {
               ),
             ),
           ],
-        ],
-      ),
-    );
-  }
-}
-
-class _CajaCerrada extends StatelessWidget {
-  const _CajaCerrada();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFF6E5),
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        border: Border.all(color: const Color(0xFFF0DCB4)),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.lock_clock_outlined, size: 18, color: Color(0xFF8A6A1F)),
-          SizedBox(width: 9),
-          Expanded(
-            child: Text(
-              'La caja está cerrada: este efectivo queda en el libro, pero '
-              'no entra en ningún cierre. Ábrela en "Arqueo de caja".',
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.4,
-                color: Color(0xFF6B520F),
-              ),
-            ),
-          ),
         ],
       ),
     );
