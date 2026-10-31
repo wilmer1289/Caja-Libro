@@ -4,11 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:mi_caja/core/tema.dart';
 
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:mi_caja/datos/export/impresion.dart';
-import 'package:mi_caja/datos/repositorio/repositorio_movimientos.dart';
+import 'package:mi_caja/datos/repositorio/repositorio_demo.dart';
+import 'package:mi_caja/dominio/banco.dart';
 import 'package:mi_caja/dominio/boleta.dart';
 import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
@@ -28,7 +28,7 @@ import 'package:provider/provider.dart';
 ///
 /// Se puede extender la clase real porque el DAO se crea pero no se usa hasta
 /// la primera consulta, y acá esas consultas nunca llegan a la base.
-class RepositorioFalso extends RepositorioMovimientos {
+class RepositorioFalso extends RepositorioDemo {
   RepositorioFalso(this._datos, {Negocio? negocio})
     : _negocio = negocio ?? Negocio.vacio;
 
@@ -179,12 +179,18 @@ class RepositorioFalso extends RepositorioMovimientos {
     String? contraparte,
     String? documentoContraparte,
     String? numeroTransaccion,
+    String? bancoTercero,
+    Vinculo vinculo = Vinculo.tercero,
+    DocumentoPago documentoPago = DocumentoPago.factura,
+    Situacion situacion = Situacion.cartera,
     String? cuentaAsociada,
     bool? conIgv,
     String? rutaFoto,
     bool conRecibo = false,
     String? tesorero,
     DetalleEfectivo? detalleEfectivo,
+    String? mercaderiaId,
+    int? costoCentavos,
   }) async {
     final categoria = Categoria.porId(categoriaId);
     final m = Movimiento(
@@ -203,6 +209,12 @@ class RepositorioFalso extends RepositorioMovimientos {
       cuentaAsociada: cuentaAsociada,
       contraparte: contraparte,
       documentoContraparte: documentoContraparte,
+      numeroTransaccion: numeroTransaccion,
+      bancoTercero: bancoTercero,
+      vinculo: vinculo,
+      documentoPago: documentoPago,
+      situacion: situacion,
+      rutaFoto: rutaFoto,
       numeroRecibo: conRecibo ? registrados.length + 1 : null,
       numeroBoleta: Boleta.corresponde(categoria)
           ? registrados.length + 1
@@ -276,15 +288,39 @@ Future<void> avanzar(WidgetTester tester) async {
 void main() {
   setUpAll(() async {
     await initializeDateFormatting('es_PE');
-    final mapa = jsonDecode(
-      File('assets/pcge.json').readAsStringSync(),
-    ) as Map<String, dynamic>;
-    Pcge.cargarDePrueba(mapa.map((k, v) => MapEntry(k, v as String)));
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   // Las categorías propias viven en una lista global: que una prueba no le
   // deje las suyas a la siguiente.
   setUp(() => Categoria.registrarPropias(const []));
+
+  Future<void> abrirRegistro(WidgetTester tester, String boton) async {
+    await tester.tap(find.widgetWithText(FilledButton, boton));
+    await tester.pumpAndSettle();
+  }
+
+  Finder chip(String texto) => find.widgetWithText(ChoiceChip, texto);
+
+  /// Por banco, el registro pasa por el voucher: sin su N° de operación no
+  /// se guarda.
+  Future<void> alVoucher(
+    WidgetTester tester, {
+    String numero = '04512378',
+  }) async {
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Datos del voucher'), findsOneWidget);
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (w) =>
+            w is TextField &&
+            (w.decoration?.hintText ?? '').startsWith('El número del voucher'),
+      ),
+      numero,
+    );
+    await tester.pumpAndSettle();
+  }
 
   testWidgets(
     'sin datos muestra la invitación a registrar, no una lista vacía',
@@ -463,6 +499,23 @@ void main() {
     expect(find.text('Reportes'), findsOneWidget);
   });
 
+  testWidgets('el IGV aparece como información automática de la categoría', (
+    tester,
+  ) async {
+    escritorio(tester);
+    await tester.pumpWidget(armar(variados));
+    await tester.pumpAndSettle();
+    await abrirRegistro(tester, 'Entró');
+
+    await tester.enterText(find.byType(TextField).first, '1180');
+    await tester.tap(chip('Ventas'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Incluye IGV S/ 180.00'), findsOneWidget);
+    expect(find.text('El monto incluye IGV'), findsNothing);
+    expect(find.text('Sin IGV'), findsNothing);
+  });
+
   testWidgets('entró y salió se abren en una ventana ancha, a dos columnas', (
     tester,
   ) async {
@@ -510,14 +563,7 @@ void main() {
     },
   );
 
-  Future<void> abrirRegistro(WidgetTester tester, String boton) async {
-    await tester.tap(find.widgetWithText(FilledButton, boton));
-    await tester.pumpAndSettle();
-  }
-
-  Finder chip(String texto) => find.widgetWithText(ChoiceChip, texto);
-
-  testWidgets('entró ofrece sólo cuatro categorías y los seis medios', (
+  testWidgets('entró ofrece cuatro categorías a la vista y los seis medios', (
     tester,
   ) async {
     escritorio(tester);
@@ -533,8 +579,9 @@ void main() {
     ]) {
       expect(chip(c), findsOneWidget, reason: c);
     }
-    // Sin menú "Otra" ni "+": cuatro opciones y nada más.
-    expect(find.widgetWithText(ActionChip, 'Otra'), findsNothing);
+    // Las de activos y financiamiento van en "Otra": se usan poco y no
+    // ocupan lugar entre las de todos los días. Sin "+" en las entradas.
+    expect(find.widgetWithText(ActionChip, 'Otra'), findsOneWidget);
     expect(find.byTooltip('Agregar una categoría nueva'), findsNothing);
 
     for (final m in [
@@ -566,8 +613,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('¿En qué exactamente?'), findsOneWidget);
 
-    // Sin cuenta no se guarda.
-    await tester.tap(find.text('Guardar entrada'));
+    // Sin cuenta no se sigue.
+    await tester.tap(find.text('Continuar'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Elige la cuenta de la lista'), findsOneWidget);
     expect(repo.registrados, isEmpty);
@@ -583,11 +630,16 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Así sale en el Formato 1.1 / 1.2'), findsOneWidget);
 
-    await tester.tap(find.text('Guardar entrada'));
+    await alVoucher(tester);
+    // La cuenta elegida a mano es la que va al formato: el vínculo no la
+    // cambia.
+    expect(find.textContaining('754 · '), findsOneWidget);
+    await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
     final guardado = repo.registrados.single;
     expect(guardado.cuentaDelFormato, '754');
     expect(guardado.concepto, 'Alquileres');
+    expect(guardado.numeroTransaccion, '04512378');
   });
 
   testWidgets('desde S/ 2,000 en efectivo no deja guardar', (tester) async {
@@ -610,11 +662,11 @@ void main() {
     expect(find.textContaining('no se puede en efectivo'), findsOneWidget);
     expect(boton('Continuar').onPressed, isNull);
 
-    // Con Yape se puede.
+    // Con Yape se puede: sigue al voucher.
     await tester.tap(chip('Yape / Plin'));
     await tester.pumpAndSettle();
     expect(find.textContaining('no se puede en efectivo'), findsNothing);
-    expect(boton('Guardar entrada').onPressed, isNotNull);
+    expect(boton('Continuar').onPressed, isNotNull);
   });
 
   testWidgets('salió tiene el "+" y agrega una categoría con su cuenta', (
@@ -634,6 +686,9 @@ void main() {
     await tester.tap(find.byTooltip('Agregar una categoría nueva'));
     await tester.pumpAndSettle();
     expect(find.text('Nueva categoría'), findsOneWidget);
+    // Al crear una categoría propia se dice si lleva IGV: es lo que después
+    // decide el IGV automático de cada movimiento con ella.
+    expect(find.text('El monto trae IGV'), findsOneWidget);
 
     await tester.enterText(
       find.byWidgetPredicate(
@@ -661,6 +716,7 @@ void main() {
 
     expect(find.text('Nueva categoría'), findsNothing);
     expect(repo.categorias.single.cuentaAsociada, '6311');
+    expect(repo.categorias.single.afectoIgv, isFalse);
     // Queda como ficha, ya elegida.
     final nueva = tester.widget<ChoiceChip>(chip('Movilidad'));
     expect(nueva.selected, isTrue);
@@ -676,7 +732,7 @@ void main() {
   });
 
   testWidgets(
-    'con recibo, "Continuar" lleva al comprobante y se imprime al guardar',
+    'con recibo, "Continuar" lleva al comprobante y se imprime con el ícono de impresora',
     (tester) async {
       escritorio(tester);
       final repo = RepositorioFalso(
@@ -697,8 +753,11 @@ void main() {
       await tester.tap(find.text('Recibo interno'));
       await tester.pumpAndSettle();
 
-      // Con recibo, el botón ya no guarda: sigue.
-      expect(find.text('Guardar entrada'), findsNothing);
+      // Por banco y con recibo, el botón ya no guarda: sigue al voucher y
+      // después al recibo.
+      expect(find.text('Guardar'), findsNothing);
+      await alVoucher(tester);
+      expect(find.text('Guardar'), findsNothing);
       await tester.tap(find.text('Continuar'));
       await tester.pumpAndSettle();
 
@@ -707,11 +766,14 @@ void main() {
       expect(find.text('RECIBO DE INGRESO'), findsOneWidget);
       expect(find.text('R.U.C. 11902816511'), findsOneWidget);
       expect(find.text('N° al guardar'), findsOneWidget);
+      expect(find.text('Atrás'), findsOneWidget);
+      expect(find.text('Guardar'), findsOneWidget);
+      expect(find.byTooltip('Guardar e imprimir'), findsOneWidget);
       // El responsable viene de los datos del negocio.
       expect(find.text('Ana Ruiz'), findsWidgets);
 
       await tester.runAsync(() async {
-        await tester.tap(find.text('Guardar e imprimir'));
+        await tester.tap(find.byTooltip('Guardar e imprimir'));
         for (var i = 0; i < 40 && repo.registrados.isEmpty; i++) {
           await Future<void>.delayed(const Duration(milliseconds: 50));
         }
@@ -729,7 +791,7 @@ void main() {
   );
 
   testWidgets(
-    'en efectivo siempre se anota con cuánto pagó: sin billetes no guarda',
+    'Continuar en efectivo exige el pago y el vuelto manuales correctos',
     (tester) async {
       escritorio(tester);
       final repo = RepositorioFalso(variados)..abrirUnaCaja();
@@ -740,28 +802,63 @@ void main() {
       await tester.tap(chip('Efectivo'));
       await tester.tap(chip('Cobros de fiado'));
       await tester.enterText(find.byType(TextField).first, '102.40');
+      await tester.ensureVisible(find.text('Recibo interno'));
+      await tester.tap(find.text('Recibo interno'));
       await tester.pumpAndSettle();
       // Ya no hay interruptor: en efectivo el paso va siempre.
       expect(find.text('Billetes y vuelto'), findsNothing);
       await tester.tap(find.text('Continuar'));
       await tester.pumpAndSettle();
       expect(find.text('¿Con cuánto pagó el cliente?'), findsOneWidget);
-      // Los pagos de un toque: el exacto y los billetes que redondean.
-      for (final t in ['Exacto', 'S/ 110.00', 'S/ 120.00', 'S/ 150.00']) {
-        expect(find.text(t), findsOneWidget, reason: t);
-      }
+      // El pago y el vuelto se registran manualmente, sin atajos automáticos.
+      expect(find.text('Exacto'), findsNothing);
+      expect(find.text('O marca billete por billete:'), findsNothing);
+      expect(find.text('Sugerir'), findsNothing);
 
-      // Sin billetes marcados no se puede guardar.
-      await tester.tap(find.text('Guardar entrada'));
+      // Sin billetes marcados no se puede continuar.
+      await tester.tap(find.text('Continuar'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Marca con qué billetes'), findsOneWidget);
+      expect(find.textContaining('Registra los billetes'), findsOneWidget);
       expect(repo.registrados, isEmpty);
 
-      // Pagó con 110: el vuelto se calcula solo.
-      await tester.tap(find.text('S/ 110.00'));
+      Finder campoConteo(int indice) => find
+          .byWidgetPredicate(
+            (w) => w is TextField && w.decoration?.hintText == '0',
+          )
+          .at(indice);
+
+      Future<void> ponerConteo(int indice, String cantidad) async {
+        final campo = campoConteo(indice);
+        await tester.ensureVisible(campo);
+        await tester.enterText(campo, cantidad);
+        await tester.pumpAndSettle();
+      }
+
+      // S/ 100 no alcanza para cubrir S/ 102.40.
+      await ponerConteo(1, '1');
+      await tester.tap(find.text('Continuar'));
       await tester.pumpAndSettle();
+      expect(find.textContaining('no alcanza'), findsOneWidget);
+      expect(repo.registrados, isEmpty);
+
+      // S/ 110: un billete de S/ 100 y uno de S/ 10.
+      await ponerConteo(4, '1');
       expect(find.text('Vuelto que le diste'), findsOneWidget);
-      await tester.tap(find.text('Guardar entrada'));
+      expect(find.textContaining('Debe sumar S/ 7.60'), findsOneWidget);
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('debería ser S/ 7.60'), findsOneWidget);
+      expect(repo.registrados, isEmpty);
+
+      // El vuelto también se anota billete por billete: 5 + 2 + 0.50 + 0.10.
+      await ponerConteo(16, '1');
+      await ponerConteo(17, '1');
+      await ponerConteo(19, '1');
+      await ponerConteo(21, '1');
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+      expect(find.text('RECIBO DE INGRESO'), findsOneWidget);
+      await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
 
       final detalle = repo.registrados.single.detalleEfectivo!;
@@ -781,22 +878,55 @@ void main() {
 
     await tester.tap(chip('Yape / Plin'));
     await tester.tap(chip('Ventas'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byType(TextField).first);
     await tester.enterText(find.byType(TextField).first, '700');
     await tester.pumpAndSettle();
-    expect(find.text('Cliente (obligatorio desde S/ 700)'), findsOneWidget);
+    // Por banco, el cliente se pide junto con el voucher.
+    expect(
+      find.textContaining('van en el paso siguiente, con el voucher'),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.text('Guardar entrada'));
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+
+    // La venta pasa por el paso de mercadería: o el tipo, o un servicio.
+    expect(find.text('¿Qué mercadería?'), findsOneWidget);
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Elige o crea un tipo de mercadería'), findsOneWidget);
+    await tester.tap(find.text('No es mercadería'));
+    await tester.pumpAndSettle();
+    await alVoucher(tester);
+
+    expect(find.text('Cliente (obligatorio desde S/ 700)'), findsOneWidget);
+    await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
     expect(
       find.text('Desde S/ 700 la boleta lleva el nombre del cliente'),
       findsOneWidget,
     );
+    // Desde S/ 700 el voucher también es obligatorio.
+    expect(
+      find.textContaining('Desde S/ 700 adjunta el voucher'),
+      findsOneWidget,
+    );
     expect(repo.registrados, isEmpty);
 
-    // Con 699.99 es opcional.
+    // Con 699.99 los dos son opcionales.
+    await tester.tap(find.text('Atrás'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Atrás'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, '699.99');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Guardar entrada'));
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cliente: quién pagó'), findsOneWidget);
+    await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
     expect(repo.registrados.single.numeroBoleta, isNotNull);
   });
@@ -812,7 +942,7 @@ void main() {
     // Ya no se desliza para eliminar.
     expect(find.byType(Dismissible), findsNothing);
 
-    await tester.tap(find.byTooltip('Recibo y boleta').first);
+    await tester.tap(find.byTooltip('Recibo, boleta y voucher').first);
     await tester.pumpAndSettle();
     expect(find.text('Recibo interno'), findsOneWidget);
     expect(find.text('Emitir recibo'), findsOneWidget);
@@ -860,7 +990,11 @@ void main() {
       expect(find.text('Tienes en total'), findsOneWidget);
       // No quedó nada en una caja anterior: no hay "seguir".
       expect(find.text('Seguir con lo que quedó'), findsNothing);
-      await tester.enterText(campo('0.00'), '100');
+      // Con otro monto no hay que elegir: se cuenta billete por billete.
+      expect(find.text('Contar billete por billete'), findsNothing);
+      expect(find.textContaining('Todo ·'), findsNothing);
+      expect(campo('0.00'), findsNothing);
+      await tester.enterText(campo('0').at(1), '1'); // S/ 100
       await tester.pumpAndSettle();
       expect(find.text('Quedan guardados S/ 400.00.'), findsOneWidget);
       await tester.enterText(campo('Quién queda a cargo'), 'Ana Ruiz');
@@ -883,9 +1017,15 @@ void main() {
       await tester.enterText(find.byType(TextField).first, '20');
       await tester.tap(find.text('Continuar'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Exacto'));
+      final billeteVeinte = find
+          .byWidgetPredicate(
+            (w) => w is TextField && w.decoration?.hintText == '0',
+          )
+          .at(3);
+      await tester.ensureVisible(billeteVeinte);
+      await tester.enterText(billeteVeinte, '1');
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Guardar entrada'));
+      await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
 
       expect(find.text('S/ 120.00'), findsWidgets);
@@ -896,13 +1036,24 @@ void main() {
       // Se cierra contando: uno de 100 y uno de 20. Cuadra.
       await tester.tap(find.text('Cerrar caja'));
       await tester.pumpAndSettle();
+      final cerrarActa = find.widgetWithText(
+        FilledButton,
+        'Cerrar caja y ver el acta',
+      );
+      // Sin nada contado no se puede cerrar.
+      expect(tester.widget<FilledButton>(cerrarActa).onPressed, isNull);
       final fichas = campo('0');
       await tester.enterText(fichas.at(1), '1'); // S/ 100
       await tester.enterText(fichas.at(3), '1'); // S/ 20
       await tester.pumpAndSettle();
       expect(find.text('La caja cuadra'), findsOneWidget);
+      expect(tester.widget<FilledButton>(cerrarActa).onPressed, isNotNull);
 
       await tocar(tester, find.text('Cerrar caja y ver el acta'));
+      // Antes de cerrar, la ventana confirma cómo quedó el conteo.
+      expect(find.text('¿Cerrar la caja?'), findsOneWidget);
+      expect(find.text('La caja cuadra'), findsWidgets);
+      await tocar(tester, find.widgetWithText(FilledButton, 'Cerrar caja'));
       expect(find.text('Caja N° 1 cerrada'), findsOneWidget);
       expect(find.text('Terminaste con'), findsOneWidget);
 
@@ -1029,10 +1180,11 @@ void main() {
       );
 
       // Con Yape sí: no pasa por la caja.
+      await tester.ensureVisible(chip('Yape / Plin'));
       await tester.tap(chip('Yape / Plin'));
       await tester.pumpAndSettle();
       expect(find.textContaining('primero ábrela'), findsNothing);
-      expect(boton('Guardar entrada').onPressed, isNotNull);
+      expect(boton('Continuar').onPressed, isNotNull);
 
       // En efectivo, "Abrir la caja" cierra el formulario y lleva al arqueo.
       await tester.tap(chip('Efectivo'));

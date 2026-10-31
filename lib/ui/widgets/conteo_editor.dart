@@ -44,10 +44,9 @@ class _ConteoEditorState extends State<ConteoEditor> {
   @override
   void didUpdateWidget(ConteoEditor anterior) {
     super.didUpdateWidget(anterior);
-    // Si el conteo cambió desde afuera ("monto exacto", "sugerir vuelto"),
-    // los campos se ponen al día. Si el cambio vino de lo que se está
-    // escribiendo, el texto ya dice lo mismo y no se toca: moverlo le
-    // saltaría el cursor a quien escribe.
+    // Si el conteo cambió desde afuera, los campos se ponen al día. Si el
+    // cambio vino de lo que se está escribiendo, el texto ya dice lo mismo y
+    // no se toca: moverlo le saltaría el cursor a quien escribe.
     for (final d in Denominacion.todas) {
       final c = _textos[d]!;
       if ((int.tryParse(c.text) ?? 0) != widget.conteo.cantidadDe(d)) {

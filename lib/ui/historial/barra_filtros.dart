@@ -55,7 +55,7 @@ class _BarraFiltrosState extends State<BarraFiltros> {
           controller: _busqueda,
           onChanged: (v) => estado.aplicarFiltro(texto: v),
           decoration: InputDecoration(
-            hintText: 'Buscar por detalle o nombre…',
+            hintText: 'Buscar por detalle, nombre o N° de operación…',
             prefixIcon: const Icon(Icons.search_rounded, size: 20),
             suffixIcon: estado.filtroTexto.isEmpty
                 ? null
@@ -75,6 +75,7 @@ class _BarraFiltrosState extends State<BarraFiltros> {
             _FiltroFecha(estado: estado),
             _FiltroCategoria(estado: estado),
             _FiltroMedio(estado: estado),
+            _FiltroVoucher(estado: estado),
             FiltroMonto(
               actual: estado.filtroMonto,
               etiqueta: estado.filtroMontoEtiqueta,
@@ -156,7 +157,7 @@ class _FiltroFecha extends StatelessWidget {
           onPressed: () async {
             final elegido = await showDialog<DateTimeRange>(
               context: context,
-              builder: (_) => _DialogoRango(inicial: rango),
+              builder: (_) => DialogoRango(inicial: rango),
             );
             if (elegido != null) estado.aplicarFiltro(rango: elegido);
           },
@@ -226,6 +227,42 @@ class _FiltroMedio extends StatelessWidget {
             elegida: actual == medio,
             onPressed: () => estado.aplicarFiltro(medio: medio),
           ),
+      ],
+    );
+  }
+}
+
+/// Las operaciones por banco según su voucher: "Sin voucher" es la lista de
+/// lo que falta adjuntar.
+class _FiltroVoucher extends StatelessWidget {
+  const _FiltroVoucher({required this.estado});
+
+  final EstadoCaja estado;
+
+  @override
+  Widget build(BuildContext context) {
+    final actual = estado.filtroVoucher;
+
+    return BotonFiltro(
+      etiqueta: 'Voucher',
+      icono: Icons.receipt_long_outlined,
+      valor: actual == null
+          ? null
+          : actual
+          ? 'Con voucher'
+          : 'Sin voucher',
+      onLimpiar: () => estado.aplicarFiltro(limpiarVoucher: true),
+      opciones: [
+        OpcionFiltro(
+          texto: 'Con voucher',
+          elegida: actual == true,
+          onPressed: () => estado.aplicarFiltro(voucher: true),
+        ),
+        OpcionFiltro(
+          texto: 'Sin voucher',
+          elegida: actual == false,
+          onPressed: () => estado.aplicarFiltro(voucher: false),
+        ),
       ],
     );
   }
@@ -413,16 +450,18 @@ class _TituloGrupo extends StatelessWidget {
 /// Cada fecha abre el selector de un solo día, que en escritorio es un diálogo
 /// de tamaño normal. El de rango de Flutter, en cambio, es siempre a pantalla
 /// completa y no se puede achicar: por eso no se usa.
-class _DialogoRango extends StatefulWidget {
-  const _DialogoRango({this.inicial});
+///
+/// Es público porque lo comparten el historial y el Libro Diario.
+class DialogoRango extends StatefulWidget {
+  const DialogoRango({super.key, this.inicial});
 
   final DateTimeRange? inicial;
 
   @override
-  State<_DialogoRango> createState() => _DialogoRangoState();
+  State<DialogoRango> createState() => _DialogoRangoState();
 }
 
-class _DialogoRangoState extends State<_DialogoRango> {
+class _DialogoRangoState extends State<DialogoRango> {
   late DateTime _desde;
   late DateTime _hasta;
 

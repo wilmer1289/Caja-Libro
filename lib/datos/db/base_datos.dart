@@ -40,6 +40,7 @@ class BaseDatos {
   static final opciones = OpenDatabaseOptions(
     version: Esquema.version,
     onCreate: (db, _) async {
+      await db.execute(Esquema.crearMercaderias);
       await db.execute(Esquema.crearMovimientos);
       await db.execute(Esquema.crearNegocio);
       await db.execute(Esquema.crearCategorias);
@@ -72,6 +73,16 @@ class BaseDatos {
       // v6 sólo agrega una tabla. Quien ya tenía cajas cuenta el efectivo
       // del negocio la próxima vez que abra una.
       if (desde < 6) await db.execute(Esquema.crearFondo);
+      if (desde < 7) {
+        for (final paso in Esquema.migracionV7) {
+          await db.execute(paso);
+        }
+      }
+      if (desde < 8) {
+        for (final paso in Esquema.migracionV8) {
+          await db.execute(paso);
+        }
+      }
     },
   );
 

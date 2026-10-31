@@ -1,10 +1,7 @@
 /// DDL de la base local.
 ///
-/// Cinco tablas: el libro de caja es una lista de movimientos; el negocio
-/// es una sola fila con los datos del encabezado de los formatos y los saldos
-/// con que abre el período; las categorías que el usuario agrega con el "+"
-/// del formulario; las cajas, cada una con su apertura y su cierre; y el
-/// efectivo del negocio, contado una vez, de donde sale lo de cada caja.
+/// Movimientos, negocio, categorías propias, jornadas, fondo y tipos de
+/// mercadería. Las bases migradas también conservan los arqueos históricos.
 class Esquema {
   /// v1: el libro básico.
   /// v2: la contabilidad del Excel — correlativo, cuenta asociada, IGV,
@@ -17,7 +14,11 @@ class Esquema {
   ///     reemplaza al arqueo suelto contra el libro.
   /// v6: el efectivo del negocio, contado billete por billete antes de la
   ///     primera caja.
-  static const version = 6;
+  /// v7: tipos de mercadería y costo de venta; null conserva datos desconocidos.
+  /// v8: los datos del voucher del Formato 1.2 —banco del otro, vínculo,
+  ///     documento y situación—. `ruta_foto` ya existía y ahora guarda el
+  ///     voucher adjunto.
+  static const version = 8;
 
   static const tablaMovimientos = 'movimientos';
   static const tablaNegocio = 'negocio';
@@ -25,8 +26,106 @@ class Esquema {
   static const tablaArqueos = 'arqueos';
   static const tablaJornadas = 'jornadas';
   static const tablaFondo = 'fondo';
+  static const tablaMercaderias = 'mercaderias';
+
+  static const crearMercaderias =
+      '''
+    CREATE TABLE $tablaMercaderias (
+      id TEXT PRIMARY KEY,
+      nombre TEXT NOT NULL,
+      nombre_clave TEXT NOT NULL UNIQUE,
+      creado_en INTEGER NOT NULL
+    )
+  ''';
+
+  static const migracionV7 = <String>[
+    crearMercaderias,
+    'ALTER TABLE $tablaMovimientos ADD COLUMN mercaderia_id TEXT REFERENCES mercaderias(id)',
+    'ALTER TABLE $tablaMovimientos ADD COLUMN mercaderia_nombre TEXT',
+    'ALTER TABLE $tablaMovimientos ADD COLUMN costo_centavos INTEGER CHECK (costo_centavos >= 0)',
+    'CREATE INDEX idx_mov_mercaderia ON $tablaMovimientos (mercaderia_id, fecha)',
+  ];
+
+  /// De la v7 a la v8: sólo agrega. Lo ya registrado queda como estaba: sin
+  /// vínculo es un tercero, y sin documento es una factura en cartera.
+  static const migracionV8 = <String>[
+    'ALTER TABLE $tablaMovimientos ADD COLUMN banco_tercero TEXT',
+    'ALTER TABLE $tablaMovimientos ADD COLUMN vinculo TEXT',
+    'ALTER TABLE $tablaMovimientos ADD COLUMN documento_pago TEXT',
+    'ALTER TABLE $tablaMovimientos ADD COLUMN situacion TEXT',
+  ];
 
   static const crearMovimientos =
+      '''
+    CREATE TABLE $tablaMovimientos (
+      id                    TEXT    PRIMARY KEY,
+      numero                INTEGER NOT NULL DEFAULT 0,
+      tipo                  TEXT    NOT NULL,
+      centavos              INTEGER NOT NULL,
+      categoria_id          TEXT    NOT NULL,
+      concepto              TEXT    NOT NULL,
+      medio                 TEXT    NOT NULL,
+      cuenta                TEXT    NOT NULL,
+      fecha                 INTEGER NOT NULL,
+      creado_en             INTEGER NOT NULL,
+      actualizado_en        INTEGER NOT NULL,
+      cuenta_asociada       TEXT,
+      igv_centavos          INTEGER NOT NULL DEFAULT 0,
+      contraparte           TEXT,
+      documento_contraparte TEXT,
+      numero_transaccion    TEXT,
+      banco_tercero         TEXT,
+      vinculo               TEXT,
+      documento_pago        TEXT,
+      situacion             TEXT,
+      numero_recibo         INTEGER,
+      numero_boleta         INTEGER,
+      tesorero              TEXT,
+      detalle_efectivo      TEXT,
+      mercaderia_id         TEXT REFERENCES mercaderias(id),
+      mercaderia_nombre     TEXT,
+      costo_centavos        INTEGER CHECK (costo_centavos >= 0),
+      ruta_foto             TEXT,
+      eliminado_en          INTEGER,
+      sync                  TEXT    NOT NULL
+    )
+  ''';
+
+  /// La tabla tal como era en la v7, congelada para probar la migración.
+  static const crearMovimientosV7 =
+      '''
+    CREATE TABLE $tablaMovimientos (
+      id                    TEXT    PRIMARY KEY,
+      numero                INTEGER NOT NULL DEFAULT 0,
+      tipo                  TEXT    NOT NULL,
+      centavos              INTEGER NOT NULL,
+      categoria_id          TEXT    NOT NULL,
+      concepto              TEXT    NOT NULL,
+      medio                 TEXT    NOT NULL,
+      cuenta                TEXT    NOT NULL,
+      fecha                 INTEGER NOT NULL,
+      creado_en             INTEGER NOT NULL,
+      actualizado_en        INTEGER NOT NULL,
+      cuenta_asociada       TEXT,
+      igv_centavos          INTEGER NOT NULL DEFAULT 0,
+      contraparte           TEXT,
+      documento_contraparte TEXT,
+      numero_transaccion    TEXT,
+      numero_recibo         INTEGER,
+      numero_boleta         INTEGER,
+      tesorero              TEXT,
+      detalle_efectivo      TEXT,
+      mercaderia_id         TEXT REFERENCES mercaderias(id),
+      mercaderia_nombre     TEXT,
+      costo_centavos        INTEGER CHECK (costo_centavos >= 0),
+      ruta_foto             TEXT,
+      eliminado_en          INTEGER,
+      sync                  TEXT    NOT NULL
+    )
+  ''';
+
+  /// Esquema anterior congelado para migraciones y sus pruebas.
+  static const crearMovimientosV6 =
       '''
     CREATE TABLE $tablaMovimientos (
       id                    TEXT    PRIMARY KEY,
@@ -207,6 +306,7 @@ class Esquema {
   /// El historial casi siempre se lee por fecha descendente y filtrando lo
   /// borrado; estos índices son los que hacen que esa consulta no recorra todo.
   static const indices = <String>[
+    'CREATE INDEX idx_mov_mercaderia ON $tablaMovimientos (mercaderia_id, fecha)',
     'CREATE INDEX idx_mov_fecha ON $tablaMovimientos (fecha DESC)',
     'CREATE INDEX idx_mov_cuenta ON $tablaMovimientos (cuenta, fecha DESC)',
     'CREATE INDEX idx_mov_sync ON $tablaMovimientos (sync)',

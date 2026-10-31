@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../core/formato.dart';
 import '../datos/repositorio/repositorio_movimientos.dart';
+import '../dominio/banco.dart';
 import '../dominio/categoria.dart';
 import '../dominio/efectivo.dart';
 import '../dominio/enums.dart';
@@ -12,6 +13,9 @@ import '../dominio/jornada.dart';
 import '../dominio/mayor.dart';
 import '../dominio/movimiento.dart';
 import '../dominio/negocio.dart';
+import '../dominio/mercaderia.dart';
+import '../dominio/inventario.dart';
+import '../dominio/libro_diario.dart';
 import '../dominio/resumen.dart';
 
 /// El estado de la app: qué mostrar en cada momento.
@@ -28,6 +32,75 @@ class EstadoCaja extends ChangeNotifier {
   List<Jornada> _jornadas = const [];
   FondoNegocio? _fondo;
   Negocio _negocio = Negocio.vacio;
+  List<Mercaderia> _mercaderias = const [];
+
+  List<Mercaderia> get mercaderias => List.unmodifiable(_mercaderias);
+
+  Future<Mercaderia> agregarMercaderia(String nombre) async {
+    final nueva = await _repo.agregarMercaderia(nombre);
+    _mercaderias = [
+      ..._mercaderias,
+      nueva,
+    ]..sort((a, b) => a.nombre.toLowerCase().compareTo(b.nombre.toLowerCase()));
+    notifyListeners();
+    return nueva;
+  }
+
+  DatoMercaderia? leerMercaderia(Movimiento movimiento) {
+    final id = movimiento.mercaderiaId;
+    if (id == null) {
+      return movimiento.costoCentavos == 0
+          ? const DatoMercaderia.servicio()
+          : null;
+    }
+    var nombre = movimiento.mercaderiaNombre;
+    for (final m in _mercaderias) {
+      if (m.id == id) nombre ??= m.nombre;
+    }
+    return DatoMercaderia(
+      id: id,
+      nombre: nombre ?? id,
+      costoCentavos: movimiento.costoCentavos,
+    );
+  }
+
+  InventarioMercaderias inventarioHasta({DateTime? fecha, String? excluirId}) {
+    final corte = fecha ?? DateTime.now();
+    final fin = DateTime(corte.year, corte.month, corte.day + 1);
+    return InventarioMercaderias.de(
+      movimientosVigentes
+          .where((m) => m.id != excluirId && m.fecha.isBefore(fin))
+          .toList(),
+      leer: leerMercaderia,
+    );
+  }
+
+  InventarioMercaderias get inventario => inventarioHasta();
+
+  int saldoDeMercaderia(String id, {DateTime? fecha, String? excluirId}) =>
+      inventarioHasta(fecha: fecha, excluirId: excluirId).saldo(id);
+
+  String? advertenciaDeCosto(
+    String id,
+    int costoCentavos, {
+    DateTime? fecha,
+    String? excluirId,
+  }) {
+    final saldo = saldoDeMercaderia(id, fecha: fecha, excluirId: excluirId);
+    if (costoCentavos <= saldo) return null;
+    return 'El costo supera el saldo registrado (${Formato.soles(saldo / 100)}). '
+        'Revisa las compras; puedes continuar si la mercadería ya existía antes de usar la app.';
+  }
+
+  LibroDiario libroDiario({required DateTime desde, required DateTime hasta}) =>
+      LibroDiario.armar(
+        negocio: negocio,
+        movimientos: movimientosVigentes,
+        desde: desde,
+        hasta: hasta,
+        mercaderia: leerMercaderia,
+        ajustes: ajustes,
+      );
   bool _cargando = true;
   String? _error;
 
@@ -41,6 +114,9 @@ class EstadoCaja extends ChangeNotifier {
   /// Rango de montos, en centavos; un extremo null = sin límite.
   ({int? min, int? max})? filtroMonto;
   String? filtroMontoEtiqueta;
+
+  /// Sólo las operaciones por banco con voucher (true) o sin él (false).
+  bool? filtroVoucher;
 
   /// Cómo se nombra el filtro de fecha en su botón: "Este mes" si vino de un
   /// período rápido; null si fue un rango a medida, y ahí se muestran las
@@ -93,6 +169,7 @@ class EstadoCaja extends ChangeNotifier {
     for (final j in _jornadas)
       if (j.ajusteId != null) j.ajusteId!,
   };
+  Set<String> get ajustes => Set.unmodifiable(_ajustes);
 
   Jornada _enVivo(Jornada caja) =>
       caja.abierta ? caja.conTotales(movimientosDeCaja(caja)) : caja;
@@ -190,6 +267,10 @@ class EstadoCaja extends ChangeNotifier {
         return false;
       }
       if (filtroMedio != null && m.medio != filtroMedio) return false;
+      final voucher = filtroVoucher;
+      if (voucher != null && (!m.enBanco || m.tieneVoucher != voucher)) {
+        return false;
+      }
 
       final monto = filtroMonto;
       if (monto != null) {
@@ -210,12 +291,17 @@ class EstadoCaja extends ChangeNotifier {
         if (!m.fecha.isBefore(finExclusivo)) return false;
       }
 
-      if (texto.isNotEmpty) {
-        final enConcepto = m.concepto.toLowerCase().contains(texto);
-        final enContraparte = (m.contraparte ?? '').toLowerCase().contains(
-          texto,
-        );
-        if (!enConcepto && !enContraparte) return false;
+      // También se busca por los datos del voucher: el N° de operación es lo
+      // primero que se tiene a mano cuando el banco pregunta por un pago.
+      if (texto.isNotEmpty &&
+          ![
+            m.concepto,
+            m.contraparte,
+            m.documentoContraparte,
+            m.numeroTransaccion,
+            m.bancoTercero,
+          ].any((t) => (t ?? '').toLowerCase().contains(texto))) {
+        return false;
       }
 
       return true;
@@ -228,6 +314,7 @@ class EstadoCaja extends ChangeNotifier {
       filtroMedio != null ||
       filtroRango != null ||
       filtroMonto != null ||
+      filtroVoucher != null ||
       filtroTexto.trim().isNotEmpty;
 
   void limpiarFiltros() {
@@ -238,6 +325,7 @@ class EstadoCaja extends ChangeNotifier {
     filtroRangoEtiqueta = null;
     filtroMonto = null;
     filtroMontoEtiqueta = null;
+    filtroVoucher = null;
     filtroTexto = '';
     notifyListeners();
   }
@@ -256,7 +344,14 @@ class EstadoCaja extends ChangeNotifier {
     bool limpiarCategoria = false,
     bool limpiarMedio = false,
     bool limpiarRango = false,
+    bool? voucher,
+    bool limpiarVoucher = false,
   }) {
+    if (limpiarVoucher) {
+      filtroVoucher = null;
+    } else if (voucher != null) {
+      filtroVoucher = voucher;
+    }
     if (limpiarTipo) {
       filtroTipo = null;
     } else if (tipo != null) {
@@ -298,6 +393,7 @@ class EstadoCaja extends ChangeNotifier {
       // Las categorías propias primero: los movimientos que las usan tienen
       // que encontrarlas al dibujarse.
       Categoria.registrarPropias(await _repo.leerCategoriasPropias());
+      _mercaderias = await _repo.leerMercaderias();
       _movimientos = await _repo.listar();
       _negocio = await _repo.leerNegocio();
       _jornadas = await _repo.leerJornadas();
@@ -440,11 +536,18 @@ class EstadoCaja extends ChangeNotifier {
     String? contraparte,
     String? documentoContraparte,
     String? numeroTransaccion,
+    String? bancoTercero,
+    Vinculo vinculo = Vinculo.tercero,
+    DocumentoPago documentoPago = DocumentoPago.factura,
+    Situacion situacion = Situacion.cartera,
+    String? rutaFoto,
     String? cuentaAsociada,
     bool? conIgv,
     bool conRecibo = false,
     String? tesorero,
     DetalleEfectivo? detalleEfectivo,
+    String? mercaderiaId,
+    int? costoCentavos,
   }) async {
     // El efectivo entra y sale de la caja del día: sin una abierta no hay
     // dónde ponerlo. El formulario ya no deja seguir; esto es la segunda
@@ -465,11 +568,18 @@ class EstadoCaja extends ChangeNotifier {
       contraparte: contraparte,
       documentoContraparte: documentoContraparte,
       numeroTransaccion: numeroTransaccion,
+      bancoTercero: bancoTercero,
+      vinculo: vinculo,
+      documentoPago: documentoPago,
+      situacion: situacion,
+      rutaFoto: rutaFoto,
       cuentaAsociada: cuentaAsociada,
       conIgv: conIgv,
       conRecibo: conRecibo,
       tesorero: tesorero,
       detalleEfectivo: detalleEfectivo,
+      mercaderiaId: mercaderiaId,
+      costoCentavos: costoCentavos,
     );
 
     ultimoMedio = medio;
@@ -485,6 +595,51 @@ class EstadoCaja extends ChangeNotifier {
       ..sort((a, b) => b.fecha.compareTo(a.fecha));
     notifyListeners();
     return nuevo;
+  }
+
+  /// Completa el voucher de un movimiento ya guardado: adjuntarlo después,
+  /// cambiarlo, o anotar el N° de operación que faltaba. Lo demás del
+  /// movimiento —monto, cuenta, fecha— no se toca: un libro no se reescribe.
+  Future<Movimiento> completarVoucher(
+    Movimiento movimiento, {
+    String? rutaFoto,
+    String? numeroTransaccion,
+    String? bancoTercero,
+    String? contraparte,
+    String? documentoContraparte,
+  }) async {
+    String? limpio(String? t) =>
+        t == null || t.trim().isEmpty ? null : t.trim();
+    final actualizado = await _repo.editar(
+      movimiento.copiarCon(
+        rutaFoto: limpio(rutaFoto),
+        numeroTransaccion: limpio(numeroTransaccion),
+        bancoTercero: limpio(bancoTercero),
+        contraparte: limpio(contraparte),
+        documentoContraparte: limpio(documentoContraparte),
+      ),
+    );
+    _movimientos = [
+      for (final m in _movimientos) m.id == actualizado.id ? actualizado : m,
+    ];
+    notifyListeners();
+    return actualizado;
+  }
+
+  /// Si ya hay otro movimiento por banco con ese N° de operación: lo más
+  /// probable es que se esté anotando dos veces el mismo voucher.
+  Movimiento? conNumeroDeOperacion(String numero, {String? salvoId}) {
+    final buscado = numero.trim();
+    if (buscado.isEmpty) return null;
+    for (final m in _movimientos) {
+      if (m.id != salvoId &&
+          !m.eliminado &&
+          m.enBanco &&
+          m.numeroTransaccion?.trim() == buscado) {
+        return m;
+      }
+    }
+    return null;
   }
 
   Future<void> eliminar(Movimiento m) async {

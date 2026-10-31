@@ -6,14 +6,8 @@ import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
 import '../widgets/conteo_editor.dart';
 
-/// El paso del efectivo: con qué billetes se pagó y qué vuelto se dio.
-///
-/// Todo cobro o pago en efectivo pasa por acá, porque de esto vive el cierre
-/// de caja: con cada billete anotado, la app sabe cuántos de cada uno
-/// debería haber al contar. Para que no demore, arriba están los montos con
-/// que se suele pagar —el exacto, el billete que redondea— a un toque. El
-/// vuelto se calcula solo y se sugiere cómo darlo; quien atiende lo cambia si
-/// no tiene esas monedas.
+/// Paso de efectivo. Se anotan manualmente los billetes y monedas entregados
+/// y, si corresponde, los que se devolvieron como vuelto.
 class PasoEfectivo extends StatelessWidget {
   const PasoEfectivo({
     super.key,
@@ -23,7 +17,6 @@ class PasoEfectivo extends StatelessWidget {
     required this.vuelto,
     required this.onEntregado,
     required this.onVuelto,
-    required this.onSugerirVuelto,
     this.error,
   });
 
@@ -35,22 +28,7 @@ class PasoEfectivo extends StatelessWidget {
   final Conteo vuelto;
   final ValueChanged<Conteo> onEntregado;
   final ValueChanged<Conteo> onVuelto;
-  final VoidCallback onSugerirVuelto;
   final String? error;
-
-  /// Con qué se suele pagar un monto: justo, o con el billete o la suma
-  /// redonda que lo cubre. Para S/ 37.40: exacto, S/ 40, S/ 50 y S/ 100.
-  static List<int> pagosRapidos(int monto) {
-    if (monto <= 0) return const [];
-    int redondear(int paso) => ((monto + paso - 1) ~/ paso) * paso;
-    final opciones = <int>{monto};
-    for (final paso in const [1000, 2000, 5000, 10000, 20000]) {
-      final valor = redondear(paso);
-      if (valor > monto) opciones.add(valor);
-    }
-    final lista = opciones.toList()..sort();
-    return lista.take(4).toList();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,9 +44,9 @@ class PasoEfectivo extends StatelessWidget {
             ('Monto', monto, Tokens.texto),
             (entro ? 'Pagó con' : 'Entregaste', entregado.total, Tokens.texto),
             (
-              'Vuelto',
-              vueltoEsperado < 0 ? 0 : vueltoEsperado,
-              vueltoEsperado < 0 ? Tokens.texto2 : Tokens.marcaOscura,
+              'Vuelto registrado',
+              vuelto.total,
+              vuelto.total > 0 ? Tokens.marcaOscura : Tokens.texto2,
             ),
           ],
         ),
@@ -82,66 +60,22 @@ class PasoEfectivo extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final valor in pagosRapidos(monto))
-              ChoiceChip(
-                label: Text(
-                  valor == monto ? 'Exacto' : Formato.soles(valor / 100),
-                ),
-                avatar: valor == monto
-                    ? const Icon(Icons.done_all_rounded, size: 17)
-                    : null,
-                selected: entregado.total == valor,
-                onSelected: (_) => onEntregado(Conteo.sugerir(valor)),
-              ),
-          ],
-        ),
-        const SizedBox(height: 14),
-        Text(
-          'O marca billete por billete:',
-          style: TextStyle(
-            fontSize: 12.5,
-            color: Tokens.texto2.withValues(alpha: 0.95),
-          ),
-        ),
-        const SizedBox(height: 8),
         ConteoEditor(conteo: entregado, onCambiar: onEntregado),
         if (vueltoEsperado > 0) ...[
           const SizedBox(height: 22),
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      entro ? 'Vuelto que le diste' : 'Vuelto que te dieron',
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Tokens.texto,
-                      ),
-                    ),
-                    Text(
-                      'Tiene que sumar ${Formato.soles(vueltoEsperado / 100)}. '
-                      'Va sugerido; cámbialo si lo diste con otras monedas.',
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        color: Tokens.texto2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              TextButton.icon(
-                onPressed: onSugerirVuelto,
-                icon: const Icon(Icons.auto_fix_high_rounded, size: 18),
-                label: const Text('Sugerir'),
-              ),
-            ],
+          Text(
+            entro ? 'Vuelto que le diste' : 'Vuelto que te dieron',
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: Tokens.texto,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            'Debe sumar ${Formato.soles(vueltoEsperado / 100)}. '
+            'Registra los billetes y monedas del vuelto.',
+            style: const TextStyle(fontSize: 12.5, color: Tokens.texto2),
           ),
           const SizedBox(height: 8),
           ConteoEditor(conteo: vuelto, onCambiar: onVuelto),

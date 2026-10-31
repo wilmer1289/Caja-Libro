@@ -14,6 +14,7 @@ import 'dashboard/dashboard_pagina.dart';
 import 'formatos/formatos_pagina.dart';
 import 'historial/acciones_movimiento.dart';
 import 'historial/historial_pagina.dart';
+import 'libro_diario/libro_diario_pagina.dart';
 import 'mayor/mayor_pagina.dart';
 import 'registro/registro_hoja.dart';
 import 'reportes/reportes_pagina.dart';
@@ -90,6 +91,7 @@ class _InicioState extends State<Inicio> {
     Seccion.iCajaYBancos => const MayorPagina(),
     Seccion.iHistorial => const HistorialPagina(),
     Seccion.iReportes => const ReportesPagina(),
+    Seccion.iLibroDiario => const LibroDiarioPagina(),
     _ => const FormatosPagina(),
   };
 
@@ -312,8 +314,8 @@ class _InicioState extends State<Inicio> {
           ],
         ),
       ),
-      // Las secciones salen por la derecha, del lado del pulgar. Con seis
-      // secciones, una barra abajo quedaba apretada y con nombres cortados.
+      // Las secciones salen por la derecha, del lado del pulgar. Con siete
+      // secciones, una barra abajo quedaría apretada y con nombres cortados.
       endDrawer: Drawer(
         width: BarraLateral.anchoMenu,
         clipBehavior: Clip.antiAlias,

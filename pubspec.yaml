@@ -46,6 +46,9 @@ dependencies:
   uuid: ^4.6.0
   pdf: ^3.13.1
   printing: ^5.15.1
+  image_picker: ^1.2.4
+  file_selector: ^1.1.0
+  google_mlkit_text_recognition: ^0.17.1
 
 # Se fija la versión de un paquete que la app no nombra, pero que le llega a
 # través de `path_provider`.
@@ -83,7 +86,7 @@ flutter:
   # aparece en la pantalla de licencias.
   assets:
     - assets/fonts/OFL.txt
-    # Plan Contable General Empresarial 2023, extraído del Excel del curso.
+    # Hoja PCGE 2026, extraída del Excel del curso con tools/generar_pcge.py.
     # Va dentro de la app porque el Formato 1.1 exige el código y la
     # denominación de la cuenta, y la app funciona sin internet.
     - assets/pcge.json

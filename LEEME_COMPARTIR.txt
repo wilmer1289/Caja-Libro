@@ -1,0 +1,27 @@
+MI CAJA - PARTE P5_REGISTRO
+
+Se conservan el codigo, historial Git, configuraciones del editor,
+recursos, pruebas, documentacion, mapa del codigo y entregables existentes.
+
+Se omitieron build, .dart_tool, caches de Gradle y C++, los temporales de
+windows/flutter/ephemeral, archivos de plugins generados, local.properties
+(con rutas de este equipo) y el archivo windows.zip duplicado.
+Flutter regenera esos archivos al resolver dependencias y compilar.
+
+Para ejecutar en Windows, con Flutter y sus herramientas instalados:
+   flutter pub get
+   flutter run -d windows
+
+Para verificar:
+   flutter analyze
+   flutter test
+
+Esta entrega identifica la parte de registro como P5_REGISTRO.
+La documentacion de datos existente sigue en P2_DATOS.md.
+El APK conservado en entregables es anterior a P2 y P5_REGISTRO: no incluye
+estos cambios. Se debe compilar un APK nuevo para probar la versión actualizada.
+Este ZIP entrega el código fuente actualizado, pero no una compilación nueva.
+La base personal de operaciones se guarda en Documentos y no viaja aqui.
+
+La copia adicional de windows.zip almacenada como objeto Git sin referencias
+se omitio de este ZIP. Se conservaron las ramas, commits, indice e historial.

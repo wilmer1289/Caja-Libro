@@ -16,7 +16,6 @@ import '../widgets/aparece.dart';
 import '../widgets/esqueleto.dart';
 import '../historial/barra_filtros.dart';
 import '../widgets/filtro_monto.dart';
-import 'bloque_asiento.dart';
 import 'hoja_formato.dart';
 
 /// Los formatos oficiales del libro de caja: el 1.1 para el efectivo y el 1.2
@@ -242,31 +241,6 @@ class _FormatosPaginaState extends State<FormatosPagina> {
               retraso: const Duration(milliseconds: 70),
               child: HojaFormato(libro: libro, filtro: _filtro),
             ),
-
-            if (libro.asientos.isNotEmpty) ...[
-              const SizedBox(height: 26),
-              Aparece(
-                retraso: const Duration(milliseconds: 140),
-                child: _TituloSeccion(
-                  titulo: 'Para el Libro Diario',
-                  bajada:
-                      'El mes entero resumido en un asiento por lado. Es '
-                      'lo que el contador pasa a los libros.',
-                ),
-              ),
-              const SizedBox(height: 12),
-              for (var i = 0; i < libro.asientos.length; i++)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 14),
-                  child: Aparece(
-                    retraso: Duration(milliseconds: 180 + i * 70),
-                    child: BloqueAsiento(
-                      asiento: libro.asientos[i],
-                      periodo: Formato.mes(_mes),
-                    ),
-                  ),
-                ),
-            ],
           ],
         );
       },
@@ -648,36 +622,6 @@ class _Cuadre extends StatelessWidget {
             ),
         ],
       ),
-    );
-  }
-}
-
-class _TituloSeccion extends StatelessWidget {
-  const _TituloSeccion({required this.titulo, required this.bajada});
-
-  final String titulo;
-  final String bajada;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          titulo,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: Tokens.texto,
-          ),
-        ),
-        const SizedBox(height: 3),
-        Text(
-          bajada,
-          style: const TextStyle(fontSize: 13, color: Tokens.texto2),
-        ),
-      ],
     );
   }
 }

@@ -2,15 +2,25 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
-/// El Plan Contable General Empresarial 2023, tal como viene en el Excel del
-/// curso: 1,776 cuentas de código a denominación.
+class CuentaPcge {
+  const CuentaPcge({
+    required this.codigo,
+    required this.nombre,
+    required this.nivel,
+  });
+  final String codigo;
+  final String nombre;
+  final int nivel;
+  String get denominacion => nombre;
+}
+
+/// Catálogo de la hoja PCGE 2026 del Excel del curso.
 ///
 /// Hace falta porque el Formato 1.1 pide, por cada operación, el **código** y
 /// la **denominación** de la cuenta asociada. En el Excel eso lo resuelve un
 /// `VLOOKUP` contra la hoja PCGE; acá es este catálogo.
 ///
-/// Se carga una sola vez al arrancar y queda en memoria: son 61 KB, no vale
-/// la pena ir al disco cada vez que se dibuja una fila.
+/// Se carga una sola vez al arrancar y queda en memoria.
 class Pcge {
   Pcge._(this._cuentas);
 
@@ -32,10 +42,30 @@ class Pcge {
   static Future<void> cargar() async {
     if (_instancia != null) return;
     final crudo = await rootBundle.loadString('assets/pcge.json');
-    final mapa = (jsonDecode(crudo) as Map<String, dynamic>).map(
-      (codigo, nombre) => MapEntry(codigo, nombre as String),
-    );
-    _instancia = Pcge._(mapa);
+    cargarDeTexto(crudo);
+  }
+
+  /// Admite también el catálogo anterior para consumidores que aún lo usan.
+  static void cargarDeTexto(String texto) {
+    final datos = jsonDecode(texto);
+    if (datos is Map<String, dynamic>) {
+      cargarDePrueba(
+        datos.map((codigo, nombre) => MapEntry(codigo, nombre as String)),
+      );
+      return;
+    }
+    final cuentas = <String, String>{};
+    for (final fila in datos as List<dynamic>) {
+      final codigo = fila['codigo'] as String;
+      final nombre = fila['nombre'] as String;
+      if (fila['nivel'] != codigo.length ||
+          cuentas.containsKey(codigo) ||
+          nombre.trim().isEmpty) {
+        throw FormatException('Cuenta PCGE inválida: $codigo');
+      }
+      cuentas[codigo] = nombre;
+    }
+    _instancia = Pcge._(cuentas);
   }
 
   /// Para las pruebas, que no tienen bundle de assets.
@@ -49,6 +79,18 @@ class Pcge {
   String denominacion(String codigo) => _cuentas[codigo] ?? codigo;
 
   bool existe(String codigo) => _cuentas.containsKey(codigo);
+
+  List<CuentaPcge> cadena(String codigo) => [
+    for (var largo = 2; largo <= codigo.length; largo++)
+      if (_cuentas.containsKey(codigo.substring(0, largo)))
+        CuentaPcge(
+          codigo: codigo.substring(0, largo),
+          nombre: _cuentas[codigo.substring(0, largo)]!,
+          nivel: largo,
+        ),
+    if (!existe(codigo))
+      CuentaPcge(codigo: codigo, nombre: codigo, nivel: codigo.length),
+  ];
 
   /// El camino completo de la cuenta, armado con los códigos que la contienen:
   /// 70121 → "VENTAS > Mercaderías > Mercaderías - Venta local > Terceros".

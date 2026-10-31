@@ -1,7 +1,6 @@
 @Tags(['captura'])
 library;
 
-import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -13,7 +12,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:mi_caja/core/tema.dart';
 import 'package:mi_caja/datos/auth/autenticador_local.dart';
-import 'package:mi_caja/datos/repositorio/repositorio_movimientos.dart';
+import 'package:mi_caja/datos/local/evidencias.dart';
+import 'package:mi_caja/datos/local/selector_voucher.dart';
+import 'package:mi_caja/datos/ocr/lector_voucher.dart';
+import 'package:mi_caja/datos/repositorio/repositorio_demo.dart';
 import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
 import 'package:mi_caja/dominio/enums.dart';
@@ -39,9 +41,69 @@ import 'package:provider/provider.dart';
 /// foto incluye lo que se abre encima (diálogos, menús), que vive en el
 /// `Overlay` del navegador.
 
+/// El voucher de prueba (`test/recursos/voucher_prueba.png`), sin cámara ni
+/// diálogo de archivos.
+class _SelectorDePrueba implements SelectorVoucher {
+  _SelectorDePrueba({this.camara = false});
+
+  final bool camara;
+  final archivo = ArchivoVoucher(
+    bytes: File('test/recursos/voucher_prueba.png').readAsBytesSync(),
+    extension: 'png',
+  );
+
+  @override
+  bool get puedeTomarFoto => camara;
+
+  @override
+  Future<ArchivoVoucher?> tomarFoto() async => archivo;
+
+  @override
+  Future<ArchivoVoucher?> elegirArchivo() async => archivo;
+}
+
+/// Lo que el lector de Windows devolvió con esa imagen.
+class _LectorDePrueba implements LectorTexto {
+  @override
+  Future<String> leer(Uint8List imagen, String extension) async => '''
+Constancia de transferencia
+Operacion exitosa
+Monto transferido
+S/ 1,250.50
+Fecha
+N de operacion
+Cliente
+Banco de origen
+Comision
+15/10/2026 10:38
+04512378
+Fernandez E.I.R.L.
+BCP
+S/ 0.00''';
+}
+
+/// Para que la miniatura del voucher salga en la foto: la imagen se decodifica
+/// fuera del reloj falso de la prueba.
+Future<void> _precargarVoucher(WidgetTester tester, Finder dentro) async {
+  final selector = SelectorVoucher.instancia as _SelectorDePrueba;
+  await tester.runAsync(
+    () => precacheImage(
+      MemoryImage(selector.archivo.bytes),
+      tester.element(dentro),
+    ),
+  );
+  await tester.pump();
+}
+
+void _usarVoucherDePrueba({bool camara = false}) {
+  AlmacenEvidencias.instancia = AlmacenEnMemoria();
+  SelectorVoucher.instancia = _SelectorDePrueba(camara: camara);
+  LectorVoucher.instancia = _LectorDePrueba();
+}
+
 /// Un repositorio en memoria: la app se arma igual que la de verdad, pero sin
 /// SQLite, que en las pruebas de widgets no responde.
-class _RepositorioEnMemoria extends RepositorioMovimientos {
+class _RepositorioEnMemoria extends RepositorioDemo {
   _RepositorioEnMemoria(
     this._datos,
     this._negocio, {
@@ -349,12 +411,7 @@ void main() {
     TestWidgetsFlutterBinding.ensureInitialized();
     await initializeDateFormatting('es_PE');
     await _cargarFuentes();
-    final crudo = File('assets/pcge.json').readAsStringSync();
-    Pcge.cargarDePrueba(
-      (jsonDecode(crudo) as Map<String, dynamic>).map(
-        (k, v) => MapEntry(k, v as String),
-      ),
-    );
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   const escritorio = Size(1366, 860);
@@ -422,6 +479,8 @@ void main() {
     await tester.enterText(find.byType(TextField).first, '1180');
     await tester.tap(find.widgetWithText(ChoiceChip, 'Ventas'));
     await _esperar(tester, pasos: 10);
+    expect(find.text('Incluye IGV S/ 180.00'), findsOneWidget);
+    expect(find.text('El monto incluye IGV'), findsNothing);
     await _capturar(tester, 'app-registro-entro');
   });
 
@@ -432,6 +491,42 @@ void main() {
     await tester.tap(find.text('Salió'));
     await _esperar(tester, pasos: 20);
     await _capturar(tester, 'app-registro-salio');
+  });
+
+  testWidgets('pie del registro en el celular', (tester) async {
+    _tamano(tester, const Size(390, 1500));
+    await tester.pumpWidget(_app(inicio));
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.text('Entró'));
+    await _esperar(tester, pasos: 20);
+
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Yape / Plin'));
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Cobros de fiado'));
+    await tester.enterText(find.byType(TextField).first, '50');
+    await tester.ensureVisible(find.text('Recibo interno'));
+    await tester.tap(find.text('Recibo interno'));
+    await _esperar(tester, pasos: 10);
+
+    expect(find.text('Atrás'), findsOneWidget);
+    await tester.tap(find.text('Continuar'));
+    await _esperar(tester, pasos: 10);
+    // Por Yape pasa por el voucher antes del recibo.
+    expect(find.text('Datos del voucher'), findsOneWidget);
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (w) =>
+            w is TextField &&
+            (w.decoration?.hintText ?? '').startsWith('El número del voucher'),
+      ),
+      '04512378',
+    );
+    await tester.ensureVisible(find.text('Continuar'));
+    await tester.tap(find.text('Continuar'));
+    await _esperar(tester, pasos: 10);
+    expect(find.text('Atrás'), findsOneWidget);
+    expect(find.text('Guardar'), findsOneWidget);
+    expect(find.byTooltip('Guardar e imprimir'), findsOneWidget);
+    await _capturar(tester, 'app-registro-celular-pie');
   });
 
   testWidgets('ventana de datos del negocio', (tester) async {
@@ -539,6 +634,7 @@ void main() {
     await _capturar(tester, 'app-salio-categorias');
     await tester.tap(find.byTooltip('Agregar una categoría nueva'));
     await _esperar(tester, pasos: 20);
+    expect(find.text('El monto trae IGV'), findsOneWidget);
     await tester.enterText(buscador('Ej. Movilidad'), 'Movilidad');
     await tester.enterText(buscador('Escribe y elige, ej. tr'), 'transporte');
     await _esperar(tester, pasos: 10);
@@ -585,6 +681,7 @@ void main() {
     await _esperar(tester, pasos: 20);
     await tester.tap(find.widgetWithText(ChoiceChip, 'Efectivo'));
     await tester.tap(find.widgetWithText(ChoiceChip, 'Ventas'));
+    await _esperar(tester, pasos: 5);
     await tester.enterText(find.byType(TextField).first, '102.40');
     await tester.tap(find.text('Recibo interno'));
     await _esperar(tester, pasos: 10);
@@ -592,9 +689,31 @@ void main() {
 
     await tester.tap(find.text('Continuar'));
     await _esperar(tester, pasos: 10);
-    // Pagó con 110: el vuelto se calcula y se sugiere solo.
-    await tester.tap(find.text('S/ 110.00'));
+    // El paso de mercadería: esta venta es un servicio, sin costo de venta.
+    await tester.tap(find.text('No es mercadería'));
+    await _esperar(tester, pasos: 5);
+    await tester.tap(find.text('Continuar'));
     await _esperar(tester, pasos: 10);
+    // Registra manualmente S/ 110 y el vuelto de S/ 7.60.
+    Finder campoConteo(int indice) => find
+        .byWidgetPredicate(
+          (w) => w is TextField && w.decoration?.hintText == '0',
+        )
+        .at(indice);
+
+    Future<void> ponerConteo(int indice) async {
+      final campo = campoConteo(indice);
+      await tester.ensureVisible(campo);
+      await tester.enterText(campo, '1');
+      await _esperar(tester, pasos: 5);
+    }
+
+    await ponerConteo(1); // S/ 100
+    await ponerConteo(4); // S/ 10
+    await ponerConteo(16); // S/ 5 de vuelto
+    await ponerConteo(17); // S/ 2 de vuelto
+    await ponerConteo(19); // S/ 0.50 de vuelto
+    await ponerConteo(21); // S/ 0.10 de vuelto
     await _capturar(tester, 'app-registro-paso2');
 
     await tester.tap(find.text('Continuar'));
@@ -612,7 +731,7 @@ void main() {
     await _esperar(tester);
     await _capturar(tester, 'app-historial-menu');
 
-    await tester.tap(find.byTooltip('Recibo y boleta').first);
+    await tester.tap(find.byTooltip('Recibo, boleta y voucher').first);
     await _esperar(tester, pasos: 20);
     await _capturar(tester, 'app-papeles');
 
@@ -625,6 +744,99 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Ver').last);
     await _esperar(tester, pasos: 20);
     await _capturar(tester, 'app-boleta');
+  });
+
+  /// El paso "Voucher": vacío, con lo que falta, y leído.
+  Future<void> pasoVoucher(
+    WidgetTester tester,
+    Size tamano,
+    String prefijo, {
+    bool camara = false,
+  }) async {
+    _usarVoucherDePrueba(camara: camara);
+    _tamano(tester, tamano);
+    await tester.pumpWidget(_app(inicio));
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.text('Entró').first);
+    await _esperar(tester, pasos: 20);
+    await tester.enterText(find.byType(TextField).first, '1250.50');
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Cobros de fiado'));
+    await tester.ensureVisible(
+      find.widgetWithText(ChoiceChip, 'Transferencia'),
+    );
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Transferencia'));
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, '$prefijo-datos');
+
+    await tester.ensureVisible(find.text('Continuar'));
+    await tester.tap(find.text('Continuar'));
+    await _esperar(tester, pasos: 20);
+    await _capturar(tester, '$prefijo-vacio');
+
+    await tester.tap(find.text('Guardar'));
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, '$prefijo-faltan');
+
+    await tester.ensureVisible(find.text('Elegir imagen o PDF'));
+    await tester.tap(find.text('Elegir imagen o PDF'));
+    await _esperar(tester, pasos: 20);
+    await _precargarVoucher(tester, find.text('Voucher adjunto'));
+    for (final ficha in ['Sucursal', 'Letra', 'En cobranza']) {
+      final f = find.widgetWithText(ChoiceChip, ficha);
+      await tester.ensureVisible(f);
+      await tester.tap(f);
+      await _esperar(tester, pasos: 6);
+    }
+    await tester.ensureVisible(find.text('Datos del voucher'));
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, '$prefijo-leido');
+    await tester.ensureVisible(find.textContaining('Cuenta del formato'));
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, '$prefijo-leido-abajo');
+  }
+
+  testWidgets('voucher: el paso del registro en escritorio', (tester) async {
+    await pasoVoucher(tester, escritorio, 'app-voucher');
+  });
+
+  testWidgets('voucher: el paso del registro en el celular', (tester) async {
+    await pasoVoucher(
+      tester,
+      const Size(390, 844),
+      'app-voucher-celular',
+      camara: true,
+    );
+  });
+
+  testWidgets('historial: falta el voucher, el ITF y el voucher adjunto', (
+    tester,
+  ) async {
+    _usarVoucherDePrueba();
+    _tamano(tester, escritorio);
+    await tester.pumpWidget(_app(inicio));
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.text('Historial'));
+    await _esperar(tester);
+    expect(find.text('Falta el voucher'), findsWidgets);
+    expect(find.textContaining('ITF estimado: '), findsOneWidget);
+    await _capturar(tester, 'app-historial-voucher');
+
+    // El primero es el pago a proveedor de S/ 8,000 con tarjeta.
+    await tester.tap(find.byTooltip('Recibo, boleta y voucher').first);
+    await _esperar(tester, pasos: 20);
+    expect(find.text('Voucher del banco · sin adjuntar'), findsOneWidget);
+    await _capturar(tester, 'app-historial-papel-voucher');
+
+    await tester.tap(find.text('Adjuntar'));
+    await _esperar(tester, pasos: 20);
+    expect(find.text('Voucher del banco'), findsOneWidget);
+    await _capturar(tester, 'app-historial-voucher-adjunto');
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Ver'));
+    await _esperar(tester, pasos: 10);
+    await _precargarVoucher(tester, find.text('Voucher · Oper. 04512378'));
+    await _esperar(tester, pasos: 10);
+    await _capturar(tester, 'app-visor-voucher');
   });
 
   /// Tres cajas cerradas —con un faltante y lo de una guardado aparte— y la
@@ -787,6 +999,10 @@ void main() {
 
     await tester.tap(find.text('Cerrar caja y ver el acta'));
     await _esperar(tester, pasos: 20);
+    // Primero la confirmación, con si cuadra y cuánto falta.
+    await _capturar(tester, 'app-caja-confirmar-cierre');
+    await tester.tap(find.widgetWithText(FilledButton, 'Cerrar caja'));
+    await _esperar(tester, pasos: 20);
     await _capturar(tester, 'app-caja-cerrada');
     await tester.tap(find.text('Ver acta'));
     await _esperar(tester, pasos: 20);
@@ -803,12 +1019,10 @@ void main() {
     await _esperar(tester);
     await tester.tap(find.text('Con otro monto'));
     await _esperar(tester, pasos: 10);
-    await tester.enterText(
-      find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '0.00',
-      ),
-      '100',
+    final fichas = find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.hintText == '0',
     );
+    await tester.enterText(fichas.at(1), '1'); // S/ 100
     await _esperar(tester, pasos: 10);
     await _capturar(tester, 'app-caja-abrir');
 
@@ -836,13 +1050,10 @@ void main() {
     await _capturar(tester, 'app-caja-contar');
 
     await tester.tap(find.text('Guardar el efectivo del negocio'));
-    await _esperar(tester);
-    await tester.enterText(
-      find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '0.00',
-      ),
-      '300',
-    );
+    await _esperar(tester, pasos: 10);
+    await tester.tap(find.text('Con otro monto'));
+    await _esperar(tester, pasos: 10);
+    await tester.enterText(fichas.at(1), '3'); // S/ 300
     await _esperar(tester, pasos: 10);
     await _capturar(tester, 'app-caja-primera');
 
@@ -908,7 +1119,7 @@ void main() {
     await _esperar(tester, pasos: 20);
     await tester.tap(find.text('Historial'));
     await _esperar(tester);
-    await tester.tap(find.byTooltip('Recibo y boleta').first);
+    await tester.tap(find.byTooltip('Recibo, boleta y voucher').first);
     await _esperar(tester, pasos: 20);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Ver').last);
     await _esperar(tester, pasos: 20);

@@ -1,3 +1,4 @@
+import 'banco.dart';
 import 'categoria.dart';
 import 'efectivo.dart';
 import 'enums.dart';
@@ -8,6 +9,7 @@ import 'enums.dart';
 /// `double` va acumulando error de redondeo y un libro de caja descuadrado por
 /// un céntimo no sirve; en centavos la suma es exacta siempre.
 class Movimiento {
+  static const _sinCambio = Object();
   const Movimiento({
     required this.id,
     required this.numero,
@@ -24,10 +26,17 @@ class Movimiento {
     this.contraparte,
     this.documentoContraparte,
     this.numeroTransaccion,
+    this.bancoTercero,
+    this.vinculo = Vinculo.tercero,
+    this.documentoPago = DocumentoPago.factura,
+    this.situacion = Situacion.cartera,
     this.numeroRecibo,
     this.numeroBoleta,
     this.tesorero,
     this.detalleEfectivo,
+    this.mercaderiaId,
+    this.mercaderiaNombre,
+    this.costoCentavos,
     this.rutaFoto,
     this.eliminadoEn,
     this.sync = EstadoSync.guardando,
@@ -73,6 +82,22 @@ class Movimiento {
   /// N° de la transacción bancaria. Columna obligatoria del Formato 1.2.
   final String? numeroTransaccion;
 
+  /// El banco o la app del otro: "BCP", "Yape". Con él se sabe si una
+  /// transferencia fue interbancaria.
+  final String? bancoTercero;
+
+  /// Qué es el otro para el negocio. Decide, junto con el documento, la
+  /// cuenta del formato (ver `ReglasCuenta`).
+  final Vinculo vinculo;
+
+  /// Qué se canceló: una factura o una letra. Sólo se pregunta en el cobro
+  /// de un fiado y en el pago a un proveedor.
+  final DocumentoPago documentoPago;
+
+  /// Dónde estaba el documento cobrado: en cartera, en cobranza o en
+  /// descuento.
+  final Situacion situacion;
+
   /// Correlativo del recibo interno (de ingreso o de egreso). Sólo lo tienen
   /// los movimientos para los que se pidió recibo.
   final int? numeroRecibo;
@@ -89,6 +114,18 @@ class Movimiento {
   /// Con qué billetes y monedas se pagó y qué vuelto se dio. Opcional.
   final DetalleEfectivo? detalleEfectivo;
 
+  final String? mercaderiaId;
+
+  /// Copia histórica: cambiar el catálogo no modifica los comprobantes emitidos.
+  final String? mercaderiaNombre;
+
+  /// null: desconocido; 0 sin tipo: servicio; positivo: costo vendido sin IGV.
+  final int? costoCentavos;
+
+  /// El voucher del banco: la foto, la captura o el PDF que prueba la
+  /// operación. Es el nombre del archivo dentro del almacén de evidencias, no
+  /// una ruta absoluta, para que un respaldo copiado a otro equipo no la
+  /// pierda.
   final String? rutaFoto;
 
   /// Borrado lógico. Nunca se hace DELETE: si un equipo borra y otro todavía
@@ -106,6 +143,19 @@ class Movimiento {
   int get baseCentavos => centavos - igvCentavos;
   bool get tieneIgv => igvCentavos > 0;
 
+  bool get enBanco => medio.cuenta == Cuenta.banco;
+  bool get tieneVoucher => (rutaFoto ?? '').trim().isNotEmpty;
+
+  /// El ITF que el banco descuenta por esta operación. No va al libro: es
+  /// informativo, para que el dueño sepa cuánto se le fue.
+  int get itfCentavos => enBanco ? Itf.de(centavos) : 0;
+
+  /// Desde este monto, una operación por banco lleva su voucher adjunto. Es
+  /// el mismo tope desde el que la boleta pide el DNI del cliente.
+  static const umbralVoucherCentavos = 70000; // S/ 700.00
+
+  bool get exigeVoucher => enBanco && centavos >= umbralVoucherCentavos;
+
   /// La cuenta que se imprime: la del movimiento si se fijó, y si no la que
   /// trae su categoría.
   String get cuentaDelFormato => cuentaAsociada ?? categoria.cuentaAsociada;
@@ -118,6 +168,38 @@ class Movimiento {
   /// no salga "Pago de Pago a proveedor".
   String get descripcionFormato {
     if (concepto.trim().isNotEmpty) return concepto.trim();
+    final detalle = _detalleDelVoucher;
+    return detalle.isEmpty ? _descripcionBase : '$_descripcionBase, $detalle';
+  }
+
+  /// Lo que agrega el voucher, como en el Excel: "Cobro de fiado, sucursal,
+  /// letra en cobranza". Sólo lo que no es lo de siempre: un tercero que paga
+  /// una factura en cartera no suma nada.
+  String get _detalleDelVoucher {
+    final cobro = tipo == Tipo.entro;
+    final situacionRara = cobro && situacion != Situacion.cartera;
+    final documentoRaro =
+        categoria.cancelaDocumento &&
+        (documentoPago != DocumentoPago.factura || situacionRara);
+    return [
+      if (vinculo != Vinculo.tercero) vinculo.enDescripcion,
+      if (documentoRaro)
+        [
+          documentoPago == DocumentoPago.letra ? 'letra' : 'factura',
+          if (situacionRara) situacion.etiqueta.toLowerCase(),
+        ].join(' '),
+    ].join(', ');
+  }
+
+  String get _descripcionBase {
+    if (mercaderiaNombre != null && mercaderiaNombre!.trim().isNotEmpty) {
+      if (categoriaId == Categoria.mercaderia.id) {
+        return 'Compra de $mercaderiaNombre';
+      }
+      if (categoriaId == Categoria.ventas.id) {
+        return 'Venta de $mercaderiaNombre';
+      }
+    }
     final propia = categoria.frase;
     if (propia != null) return propia;
     final verbo = tipo == Tipo.entro ? 'Cobro' : 'Pago';
@@ -147,10 +229,17 @@ class Movimiento {
     String? contraparte,
     String? documentoContraparte,
     String? numeroTransaccion,
+    String? bancoTercero,
+    Vinculo? vinculo,
+    DocumentoPago? documentoPago,
+    Situacion? situacion,
     int? numeroRecibo,
     String? tesorero,
     String? rutaFoto,
-    DateTime? eliminadoEn,
+    Object? eliminadoEn = _sinCambio,
+    Object? mercaderiaId = _sinCambio,
+    Object? mercaderiaNombre = _sinCambio,
+    Object? costoCentavos = _sinCambio,
     EstadoSync? sync,
   }) {
     return Movimiento(
@@ -169,12 +258,27 @@ class Movimiento {
       contraparte: contraparte ?? this.contraparte,
       documentoContraparte: documentoContraparte ?? this.documentoContraparte,
       numeroTransaccion: numeroTransaccion ?? this.numeroTransaccion,
+      bancoTercero: bancoTercero ?? this.bancoTercero,
+      vinculo: vinculo ?? this.vinculo,
+      documentoPago: documentoPago ?? this.documentoPago,
+      situacion: situacion ?? this.situacion,
       numeroRecibo: numeroRecibo ?? this.numeroRecibo,
       numeroBoleta: numeroBoleta,
       tesorero: tesorero ?? this.tesorero,
       detalleEfectivo: detalleEfectivo,
+      mercaderiaId: identical(mercaderiaId, _sinCambio)
+          ? this.mercaderiaId
+          : mercaderiaId as String?,
+      mercaderiaNombre: identical(mercaderiaNombre, _sinCambio)
+          ? this.mercaderiaNombre
+          : mercaderiaNombre as String?,
+      costoCentavos: identical(costoCentavos, _sinCambio)
+          ? this.costoCentavos
+          : costoCentavos as int?,
       rutaFoto: rutaFoto ?? this.rutaFoto,
-      eliminadoEn: eliminadoEn ?? this.eliminadoEn,
+      eliminadoEn: identical(eliminadoEn, _sinCambio)
+          ? this.eliminadoEn
+          : eliminadoEn as DateTime?,
       sync: sync ?? this.sync,
     );
   }
@@ -196,10 +300,17 @@ class Movimiento {
     'contraparte': contraparte,
     'documento_contraparte': documentoContraparte,
     'numero_transaccion': numeroTransaccion,
+    'banco_tercero': bancoTercero,
+    'vinculo': vinculo.name,
+    'documento_pago': documentoPago.name,
+    'situacion': situacion.name,
     'numero_recibo': numeroRecibo,
     'numero_boleta': numeroBoleta,
     'tesorero': tesorero,
     'detalle_efectivo': detalleEfectivo?.aTexto(),
+    'mercaderia_id': mercaderiaId,
+    'mercaderia_nombre': mercaderiaNombre,
+    'costo_centavos': costoCentavos,
     'ruta_foto': rutaFoto,
     'eliminado_en': eliminadoEn?.millisecondsSinceEpoch,
     'sync': sync.name,
@@ -224,12 +335,19 @@ class Movimiento {
       contraparte: m['contraparte'] as String?,
       documentoContraparte: m['documento_contraparte'] as String?,
       numeroTransaccion: m['numero_transaccion'] as String?,
+      bancoTercero: m['banco_tercero'] as String?,
+      vinculo: Vinculo.desdeBd(m['vinculo'] as String?),
+      documentoPago: DocumentoPago.desdeBd(m['documento_pago'] as String?),
+      situacion: Situacion.desdeBd(m['situacion'] as String?),
       numeroRecibo: m['numero_recibo'] as int?,
       numeroBoleta: m['numero_boleta'] as int?,
       tesorero: m['tesorero'] as String?,
       detalleEfectivo: DetalleEfectivo.desdeTexto(
         m['detalle_efectivo'] as String?,
       ),
+      mercaderiaId: m['mercaderia_id'] as String?,
+      mercaderiaNombre: m['mercaderia_nombre'] as String?,
+      costoCentavos: m['costo_centavos'] as int?,
       rutaFoto: m['ruta_foto'] as String?,
       eliminadoEn: m['eliminado_en'] == null ? null : fecha(m['eliminado_en']),
       sync: EstadoSync.desdeBd(m['sync']! as String),

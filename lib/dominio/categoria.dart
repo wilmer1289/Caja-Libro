@@ -7,6 +7,7 @@ enum GrupoCategoria {
   compras('Compras'),
   servicios('Servicios'),
   personal('Personal'),
+  financiero('Activos y financiamiento'),
   otros('Otros'),
   propias('Mis categorías');
 
@@ -37,6 +38,8 @@ class Categoria {
     required this.cuentaAsociada,
     required this.grupo,
     this.cuentaResultado,
+    this.cuentaRelacionada,
+    this.cuentaPersonal,
     this.frase,
     this.afectoIgv = false,
     this.comun = false,
@@ -54,6 +57,16 @@ class Categoria {
   /// La cuenta de venta o de gasto, para el Libro Diario. Null cuando la
   /// operación sólo mueve plata sin generar venta ni gasto nuevo.
   final String? cuentaResultado;
+
+  /// La cuenta cuando el otro es una relacionada (matriz, filial, sucursal o
+  /// asociada): el PCGE las separa de los terceros. Null si no cambia.
+  ///
+  /// Las cuentas comerciales (1212, 122, 4212) no la necesitan: su variante
+  /// depende además del documento, y la arma `ReglasCuenta`.
+  final String? cuentaRelacionada;
+
+  /// La cuenta cuando el otro es un trabajador o un socio. Null si no cambia.
+  final String? cuentaPersonal;
 
   /// Cómo se describe la operación en el formato oficial, cuando armarla con
   /// "Cobro de " + etiqueta sale mal.
@@ -78,6 +91,10 @@ class Categoria {
   /// formulario pide la cuenta exacta en vez de mandar todo a una cuenta
   /// genérica.
   bool get pideCuenta => id == otrosIngresos.id || id == otrosEgresos.id;
+
+  /// Cancela un documento que ya existía: el fiado cobra una factura o una
+  /// letra, el pago al proveedor paga una. Por eso se pregunta cuál.
+  bool get cancelaDocumento => id == cobrosFiado.id || id == proveedores.id;
 
   // --- Entradas ---
 
@@ -121,6 +138,50 @@ class Categoria {
     cuentaResultado: '759',
     frase: 'Otros cobros',
     comun: true,
+  );
+
+  // --- Activos y financiamiento: cobros de algo que ya se debía ---
+
+  /// El cobro de un activo fijo vendido: una camioneta, una computadora.
+  static const ventaActivo = Categoria(
+    id: 'venta_activo',
+    etiqueta: 'Venta de activo fijo',
+    tipo: Tipo.entro,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '1653',
+    cuentaRelacionada: '1753',
+    frase: 'Cobro por venta de activo fijo',
+  );
+
+  static const cobroPrestamo = Categoria(
+    id: 'cobro_prestamo',
+    etiqueta: 'Cobro de préstamo',
+    tipo: Tipo.entro,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '1612',
+    cuentaRelacionada: '1712',
+    cuentaPersonal: '1411',
+    frase: 'Cobro de préstamo',
+  );
+
+  static const dividendosRecibidos = Categoria(
+    id: 'dividendos_cobro',
+    etiqueta: 'Dividendos',
+    tipo: Tipo.entro,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '1633',
+    cuentaRelacionada: '1733',
+    frase: 'Cobro de dividendos',
+  );
+
+  static const regalias = Categoria(
+    id: 'regalias',
+    etiqueta: 'Regalías',
+    tipo: Tipo.entro,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '1632',
+    cuentaRelacionada: '1732',
+    frase: 'Cobro de regalías',
   );
 
   // --- Salidas ---
@@ -278,6 +339,49 @@ class Categoria {
     cuentaAsociada: '4539',
   );
 
+  /// Honorarios de una persona que emite recibo por honorarios: no lleva IGV.
+  static const honorarios = Categoria(
+    id: 'honorarios',
+    etiqueta: 'Honorarios',
+    tipo: Tipo.salio,
+    grupo: GrupoCategoria.servicios,
+    cuentaAsociada: '424',
+    frase: 'Pago de honorarios',
+  );
+
+  // --- Activos y financiamiento: pagos de algo que ya se debía ---
+
+  static const compraActivo = Categoria(
+    id: 'compra_activo',
+    etiqueta: 'Compra de activo fijo',
+    tipo: Tipo.salio,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '4654',
+    cuentaRelacionada: '4774',
+    frase: 'Pago por compra de activo fijo',
+  );
+
+  static const pagoPrestamo = Categoria(
+    id: 'pago_prestamo',
+    etiqueta: 'Pago de préstamo',
+    tipo: Tipo.salio,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '4511',
+    cuentaRelacionada: '471',
+    cuentaPersonal: '4411',
+    frase: 'Pago de préstamo',
+  );
+
+  static const dividendosPagados = Categoria(
+    id: 'dividendos_pago',
+    etiqueta: 'Pago de dividendos',
+    tipo: Tipo.salio,
+    grupo: GrupoCategoria.financiero,
+    cuentaAsociada: '4412',
+    cuentaRelacionada: '475',
+    frase: 'Pago de dividendos',
+  );
+
   static const otrosEgresos = Categoria(
     id: 'otros_egresos',
     etiqueta: 'Otros',
@@ -294,6 +398,10 @@ class Categoria {
     cobrosFiado,
     anticipos,
     otrosIngresos,
+    ventaActivo,
+    cobroPrestamo,
+    dividendosRecibidos,
+    regalias,
     mercaderia,
     suministros,
     proveedores,
@@ -309,6 +417,10 @@ class Categoria {
     onp,
     afp,
     otrasObligaciones,
+    honorarios,
+    compraActivo,
+    pagoPrestamo,
+    dividendosPagados,
     otrosEgresos,
   ];
 

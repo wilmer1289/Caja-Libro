@@ -64,6 +64,18 @@ class Seccion {
     bajada: 'Cómo te fue mes a mes',
   );
 
+  /// El Libro Diario (Formato 5.1): cada operación convertida en sus
+  /// asientos, con las cuentas del PCGE. Reemplaza al bloque "Para el Libro
+  /// Diario" que antes vivía al pie de Formatos oficiales: el diario no es un
+  /// apéndice del libro de caja, tiene su propio período, su propio resumen y
+  /// su propio panel de mercaderías.
+  static const libroDiario = Seccion(
+    etiqueta: 'Libro diario',
+    icono: Icons.menu_book_outlined,
+    iconoActivo: Icons.menu_book_rounded,
+    bajada: 'Cada operación con sus asientos, cuenta por cuenta',
+  );
+
   /// El libro de caja como lo pide SUNAT. Es una sección propia y no una
   /// pestaña dentro de Reportes porque no es un reporte: es *el* documento, y
   /// es la razón por la que un negocio formal usaría esta app.
@@ -80,6 +92,7 @@ class Seccion {
     cajaYBancos,
     historial,
     reportes,
+    libroDiario,
     formatos,
   ];
 
@@ -90,5 +103,6 @@ class Seccion {
   static const iCajaYBancos = 2;
   static const iHistorial = 3;
   static const iReportes = 4;
-  static const iFormatos = 5;
+  static const iLibroDiario = 5;
+  static const iFormatos = 6;
 }

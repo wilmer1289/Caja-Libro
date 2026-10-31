@@ -13,6 +13,7 @@ import '../../dominio/documento.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/libro_oficial.dart';
+import '../../dominio/libro_diario.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/negocio.dart';
 import '../../dominio/recibo.dart';
@@ -138,61 +139,176 @@ class ExportadorPdf {
       ),
     );
 
-    // Los asientos van en su propia sección y no al pie de la tabla.
-    //
-    // Dos razones: son otro documento —el libro de caja registra operación por
-    // operación, el diario recibe un asiento por mes— y, si fueran parte de la
-    // misma sección, al pasar de hoja se repetiría encima de ellos la fila de
-    // títulos de la tabla, que no tiene nada que ver.
-    if (libro.asientos.isNotEmpty) {
-      doc.addPage(
-        pw.MultiPage(
-          pageFormat: _hoja.landscape,
-          margin: _margenes,
-          header: (ctx) => _tituloSeccion(libro),
-          footer: (ctx) => _pie(ctx),
-          build: (ctx) => [
-            for (final a in libro.asientos) ...[
-              _asiento(a, Formato.mes(libro.desde), usable),
-              pw.SizedBox(height: 12),
-            ],
-          ],
-        ),
-      );
-    }
-
     return doc.save();
   }
 
-  /// La franja que encabeza la sección del Libro Diario.
-  static pw.Widget _tituloSeccion(LibroOficial libro) {
-    return pw.Container(
-      margin: const pw.EdgeInsets.only(bottom: 10),
-      padding: const pw.EdgeInsets.only(bottom: 6),
-      decoration: const pw.BoxDecoration(
-        border: pw.Border(bottom: pw.BorderSide(color: _borde, width: 0.5)),
-      ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Text(
-            'PARA EL LIBRO DIARIO',
-            style: pw.TextStyle(
-              fontSize: 8.5,
-              letterSpacing: 0.8,
-              fontWeight: pw.FontWeight.bold,
-              color: _texto,
+  /// Formato 5.1 del Libro Diario, con encabezado de columnas repetido.
+  ///
+  /// Las mismas 11 columnas de la plantilla y del CSV: la referencia va en
+  /// sus tres columnas (código del libro, correlativo y documento). El número
+  /// y la fecha salen sólo en la primera fila de cada asiento, para que se
+  /// lea dónde empieza uno nuevo.
+  static Future<Uint8List> diario(LibroDiario libro) async {
+    await _cargarFuentes();
+    String monto(int centavos) =>
+        centavos == 0 ? '' : Formato.monto(centavos / 100);
+
+    final filas = <List<String>>[];
+    for (final a in libro.asientos) {
+      for (final etapa in a.etapas) {
+        var primera = true;
+        for (final linea in etapa.lineas) {
+          for (var i = 0; i < linea.cadena.length; i++) {
+            final c = linea.cadena[i];
+            final conImporte = i == 0;
+            filas.add([
+              primera ? a.numero : '',
+              '',
+              primera ? Formato.fecha(a.fecha) : '',
+              primera ? etapa.glosa : '',
+              primera ? (a.codigoLibro ?? '') : '',
+              '',
+              primera ? (a.documento ?? '') : '',
+              c.codigo,
+              c.denominacion,
+              conImporte ? monto(linea.debe) : '',
+              conImporte ? monto(linea.haber) : '',
+            ]);
+            primera = false;
+          }
+        }
+      }
+      filas.add([
+        ...List.filled(8, ''),
+        'TOTAL OPERACIÓN ${a.numero}',
+        monto(a.totalDebe),
+        monto(a.totalHaber),
+      ]);
+    }
+    filas.add([
+      ...List.filled(8, ''),
+      'TOTAL PERÍODO',
+      monto(libro.totalDebe),
+      monto(libro.totalHaber),
+    ]);
+
+    // Los títulos de la plantilla, abreviados para que entren en A4.
+    const titulos = [
+      'N° CORREL. DEL ASIENTO',
+      'CÓD. RVIE / RCE / CAR',
+      'FECHA',
+      'GLOSA O DESCRIPCIÓN',
+      'CÓD. DEL LIBRO (TABLA 8)',
+      'N° CORREL.',
+      'N° DOC. SUSTENTATORIO',
+      'CÓD. CUENTA',
+      'DENOMINACIÓN DE LA CUENTA',
+      'DEBE',
+      'HABER',
+    ];
+    const pesos = [
+      40.0,
+      46.0,
+      50.0,
+      120.0,
+      44.0,
+      40.0,
+      62.0,
+      42.0,
+      150.0,
+      56.0,
+      56.0,
+    ];
+    final anchos = {
+      for (var i = 0; i < pesos.length; i++) i: pw.FlexColumnWidth(pesos[i]),
+    };
+    final documento = libro.negocio.documento;
+
+    final doc = pw.Document(theme: _tema);
+    doc.addPage(
+      pw.MultiPage(
+        pageFormat: _hoja.landscape,
+        margin: _margenes,
+        header: (ctx) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            if (ctx.pageNumber == 1) ...[
+              pw.Text(
+                'FORMATO 5.1: "LIBRO DIARIO"',
+                style: pw.TextStyle(
+                  fontSize: 12,
+                  fontWeight: pw.FontWeight.bold,
+                  color: _texto,
+                ),
+              ),
+              pw.SizedBox(height: 4),
+              pw.Text(
+                'PERÍODO: ${Formato.fecha(libro.desde)} al '
+                '${Formato.fecha(libro.hasta)}    '
+                '${documento.length == 11 ? 'RUC' : 'DNI'}: $documento    '
+                '${libro.negocio.razonSocial}',
+                style: const pw.TextStyle(fontSize: 8, color: _texto2),
+              ),
+              pw.SizedBox(height: 8),
+            ],
+            pw.Table(
+              columnWidths: anchos,
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: _cabecera),
+                  children: [
+                    for (final t in titulos)
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(4),
+                        child: pw.Text(
+                          t,
+                          style: pw.TextStyle(
+                            fontSize: 6,
+                            fontWeight: pw.FontWeight.bold,
+                            color: _texto,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
             ),
-          ),
-          pw.Text(
-            '${libro.negocio.razonSocial}  ·  '
-            '${Formato.mesSolo(libro.desde).toUpperCase()} - '
-            '${libro.desde.year}',
-            style: const pw.TextStyle(fontSize: 7.5, color: _texto2),
+          ],
+        ),
+        footer: _pie,
+        build: (ctx) => [
+          pw.Table(
+            border: pw.TableBorder.all(color: _borde, width: .35),
+            columnWidths: anchos,
+            children: [
+              for (final fila in filas)
+                pw.TableRow(
+                  children: [
+                    for (var i = 0; i < fila.length; i++)
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(
+                          horizontal: 3,
+                          vertical: 3,
+                        ),
+                        child: pw.Text(
+                          fila[i],
+                          textAlign: i >= 9
+                              ? pw.TextAlign.right
+                              : pw.TextAlign.left,
+                          style: const pw.TextStyle(
+                            fontSize: 6.2,
+                            color: _texto,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+            ],
           ),
         ],
       ),
     );
+    return doc.save();
   }
 
   static pw.Widget _pie(pw.Context ctx) {
@@ -543,146 +659,6 @@ class ExportadorPdf {
     );
   }
 
-  static pw.Widget _asiento(
-    AsientoResumen asiento,
-    String periodo,
-    double usable,
-  ) {
-    const anchoCodigo = 52.0;
-    const anchoImporte = 80.0;
-
-    pw.Widget fila(
-      String codigo,
-      String denominacion,
-      String debe,
-      String haber, {
-      bool titulo = false,
-      bool sangria = false,
-    }) {
-      final estilo = pw.TextStyle(
-        fontSize: titulo ? 6 : 7.2,
-        fontWeight: titulo ? pw.FontWeight.bold : pw.FontWeight.normal,
-        color: titulo ? _texto2 : _texto,
-      );
-      return pw.Container(
-        decoration: const pw.BoxDecoration(
-          border: pw.Border(bottom: pw.BorderSide(color: _borde, width: 0.5)),
-        ),
-        padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: pw.Row(
-          children: [
-            pw.SizedBox(
-              width: anchoCodigo,
-              child: pw.Text(codigo, style: estilo),
-            ),
-            pw.Expanded(
-              child: pw.Padding(
-                padding: pw.EdgeInsets.only(left: sangria ? 14 : 0),
-                child: pw.Text(denominacion, style: estilo),
-              ),
-            ),
-            pw.SizedBox(
-              width: anchoImporte,
-              child: pw.Text(
-                debe,
-                textAlign: pw.TextAlign.right,
-                style: estilo,
-              ),
-            ),
-            pw.SizedBox(
-              width: anchoImporte,
-              child: pw.Text(
-                haber,
-                textAlign: pw.TextAlign.right,
-                style: estilo,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return pw.Container(
-      width: usable,
-      decoration: pw.BoxDecoration(
-        border: pw.Border.all(color: _borde, width: 0.5),
-      ),
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-        children: [
-          pw.Container(
-            color: _fondo,
-            padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            child: pw.Row(
-              children: [
-                pw.Text(
-                  '${asiento.numero}   ${asiento.titulo}',
-                  style: pw.TextStyle(
-                    fontSize: 7.5,
-                    fontWeight: pw.FontWeight.bold,
-                    color: _texto,
-                  ),
-                ),
-                pw.SizedBox(width: 10),
-                pw.Text(
-                  '${asiento.glosa} de $periodo',
-                  style: const pw.TextStyle(fontSize: 7, color: _texto2),
-                ),
-              ],
-            ),
-          ),
-          fila(
-            'COD. CTA.',
-            'DENOMINACIÓN DE LA CUENTA',
-            'DEBE',
-            'HABER',
-            titulo: true,
-          ),
-          for (final l in asiento.lineas)
-            fila(
-              l.codigo,
-              l.denominacion,
-              l.debe == 0 ? '' : Formato.monto(l.debe / 100),
-              l.haber == 0 ? '' : Formato.monto(l.haber / 100),
-              sangria: l.haber > 0,
-            ),
-          pw.Container(
-            color: _fondo,
-            padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            child: pw.Row(
-              children: [
-                pw.Expanded(
-                  child: pw.Text(
-                    'TOTAL',
-                    textAlign: pw.TextAlign.right,
-                    style: pw.TextStyle(
-                      fontSize: 7,
-                      fontWeight: pw.FontWeight.bold,
-                      color: _texto,
-                    ),
-                  ),
-                ),
-                for (final v in [asiento.totalDebe, asiento.totalHaber])
-                  pw.SizedBox(
-                    width: anchoImporte,
-                    child: pw.Text(
-                      Formato.monto(v / 100),
-                      textAlign: pw.TextAlign.right,
-                      style: pw.TextStyle(
-                        fontSize: 7.4,
-                        fontWeight: pw.FontWeight.bold,
-                        color: _texto,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   // -------------------------------------------------------------------------
   // Boleta, recibo, acta de cierre y resumen de cajas
   // -------------------------------------------------------------------------
@@ -740,6 +716,9 @@ class ExportadorPdf {
       'Formato ${libro.cuenta == Cuenta.caja ? '1.1' : '1.2'} '
       '- ${libro.desde.year}-${libro.desde.month.toString().padLeft(2, '0')}'
       '.pdf';
+
+  static String nombreDiario(LibroDiario libro) =>
+      'LibroDiario_5-1_${libro.desde.year}-${libro.desde.month.toString().padLeft(2, '0')}.pdf';
 
   static String nombreRecibo(Recibo recibo) =>
       'Recibo ${recibo.esIngreso ? 'ingreso' : 'egreso'} '

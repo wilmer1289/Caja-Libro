@@ -73,17 +73,44 @@ class FilaMovimiento extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    '${movimiento.categoria.etiqueta} · '
-                    '${movimiento.medio.etiqueta} · '
-                    '${Formato.fechaRelativa(movimiento.fecha)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      color: Tokens.texto2,
-                    ),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          '${movimiento.categoria.etiqueta} · '
+                          '${movimiento.medio.etiqueta} · '
+                          '${Formato.fechaRelativa(movimiento.fecha)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            color: Tokens.texto2,
+                          ),
+                        ),
+                      ),
+                      if (movimiento.tieneVoucher) ...[
+                        const SizedBox(width: 4),
+                        const Tooltip(
+                          message: 'Con voucher',
+                          child: Icon(
+                            Icons.attach_file_rounded,
+                            size: 14,
+                            color: Tokens.texto2,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
+                  if (_tipoDeMercaderia(movimiento) case final tipo?) ...[
+                    const SizedBox(height: 4),
+                    _EtiquetaMercaderia(texto: tipo),
+                  ],
+                  // Desde S/ 700 el voucher es obligatorio: si falta (porque
+                  // se anotó antes de la regla), la fila lo recuerda.
+                  if (movimiento.exigeVoucher && !movimiento.tieneVoucher) ...[
+                    const SizedBox(height: 4),
+                    const _FaltaVoucher(),
+                  ],
                 ],
               ),
             ),
@@ -111,6 +138,93 @@ class FilaMovimiento extends StatelessWidget {
 
     if (!resaltar) return fila;
     return _Destello(child: fila);
+  }
+}
+
+/// El tipo de mercadería del movimiento, para mostrarlo en su fila: "tela" en
+/// una compra y "tela · costo S/ 1,000.00" en una venta. Null si no tiene.
+String? _tipoDeMercaderia(Movimiento m) {
+  final nombre = m.mercaderiaNombre?.trim();
+  if (nombre == null || nombre.isEmpty) return null;
+  final costo = m.costoCentavos ?? 0;
+  if (m.tipo == Tipo.entro && costo > 0) {
+    return '$nombre · costo ${Formato.soles(costo / 100)}';
+  }
+  return nombre;
+}
+
+class _EtiquetaMercaderia extends StatelessWidget {
+  const _EtiquetaMercaderia({required this.texto});
+
+  final String texto;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: Tokens.marcaSuave,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.inventory_2_outlined,
+            size: 12,
+            color: Tokens.marcaOscura,
+          ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              texto,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: Tokens.marcaOscura,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FaltaVoucher extends StatelessWidget {
+  const _FaltaVoucher();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF6E5),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFF0DCB4)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.receipt_long_outlined, size: 12, color: Color(0xFF6B520F)),
+          SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              'Falta el voucher',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF6B520F),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

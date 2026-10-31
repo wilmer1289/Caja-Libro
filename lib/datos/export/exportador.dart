@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/formato.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/libro_oficial.dart';
+import '../../dominio/libro_diario.dart';
 
 /// Saca el formato oficial a un archivo que se abre en Excel.
 ///
@@ -37,6 +38,97 @@ class Exportador {
       encoding: utf8,
     );
     return archivo.path;
+  }
+
+  static Future<String> guardarDiario(LibroDiario libro) async {
+    final carpeta = await _carpeta();
+    final archivo = File(p.join(carpeta.path, nombreDiario(libro)));
+    await archivo.writeAsBytes(utf8.encode('\uFEFF${csvDiario(libro)}'));
+    return archivo.path;
+  }
+
+  static String nombreDiario(LibroDiario libro) =>
+      'LibroDiario_5-1_${_periodoArchivo(libro.desde)}.csv';
+
+  /// Las columnas del Formato 5.1, como en la plantilla del curso. Las usan
+  /// el CSV y el PDF.
+  static const columnasDiario = [
+    'NÚMERO CORRELATIVO DEL ASIENTO O CÓDIGO ÚNICO DE LA OPERACIÓN',
+    'CÓDIGO PROPUESTO EN EL RVIE O RCE / CÓDIGO DE ANOTACIÓN DE REGISTRO (CAR)',
+    'FECHA O PERÍODO DE LA OPERACIÓN',
+    'GLOSA O DESCRIPCIÓN DE LA OPERACIÓN',
+    'CÓDIGO DEL LIBRO O REGISTRO (TABLA 8)',
+    'NÚMERO CORRELATIVO',
+    'NÚMERO DEL DOCUMENTO SUSTENTATORIO',
+    'CÓDIGO DE LA CUENTA CONTABLE',
+    'DENOMINACIÓN DE LA CUENTA CONTABLE',
+    'DEBE',
+    'HABER',
+  ];
+
+  /// El CSV del Formato 5.1, con el mismo encabezado y las mismas columnas
+  /// que la plantilla.
+  ///
+  /// La referencia va en sus tres columnas: código del libro (Tabla 8),
+  /// número correlativo y documento sustentatorio. El correlativo queda en
+  /// blanco: la app no lleva un Registro de Compras ni de Ventas de donde
+  /// sacarlo, y en el ejemplo del Excel también va vacío. El importe va en la
+  /// primera fila de cada cadena de cuentas; las hijas sólo llevan código y
+  /// denominación.
+  static String csvDiario(LibroDiario libro) {
+    final lineas = <String>[];
+    void fila(List<String> celdas) => lineas.add(celdas.map(_celda).join(_sep));
+
+    // --- Encabezado del formato ---
+    fila(const ['FORMATO 5.1: "LIBRO DIARIO"']);
+    fila([
+      'PERÍODO:',
+      '${Formato.fecha(libro.desde)} al ${Formato.fecha(libro.hasta)}',
+    ]);
+    fila(['RUC:', libro.negocio.documento]);
+    fila([
+      'APELLIDOS Y NOMBRES, DENOMINACIÓN O RAZÓN SOCIAL:',
+      libro.negocio.razonSocial,
+    ]);
+    fila(const []);
+    fila(columnasDiario);
+
+    for (final a in libro.asientos) {
+      for (final etapa in a.etapas) {
+        for (final linea in etapa.lineas) {
+          for (var i = 0; i < linea.cadena.length; i++) {
+            final cuenta = linea.cadena[i];
+            final conImporte = i == 0;
+            fila([
+              a.numero,
+              '',
+              Formato.fecha(a.fecha),
+              etapa.glosa,
+              a.codigoLibro ?? '',
+              '',
+              a.documento ?? '',
+              cuenta.codigo,
+              cuenta.denominacion,
+              conImporte ? _monto(linea.debe) : '',
+              conImporte ? _monto(linea.haber) : '',
+            ]);
+          }
+        }
+      }
+      fila([
+        ...List.filled(8, ''),
+        'TOTAL OPERACIÓN ${a.numero}',
+        _monto(a.totalDebe),
+        _monto(a.totalHaber),
+      ]);
+    }
+    fila([
+      ...List.filled(8, ''),
+      'TOTAL PERÍODO',
+      _monto(libro.totalDebe),
+      _monto(libro.totalHaber),
+    ]);
+    return lineas.join('\r\n');
   }
 
   /// La carpeta donde queda el archivo: la misma donde vive la base, así todo
@@ -143,28 +235,6 @@ class Exportador {
       _monto(libro.totalDeudor),
       _monto(libro.totalAcreedor),
     ]);
-
-    // --- Los asientos resumen, como los pone el Excel debajo del formato ---
-    for (final asiento in libro.asientos) {
-      fila(const []);
-      fila([asiento.titulo]);
-      fila([...huecos.take(3), 'CÓD.', 'DENOMINACIÓN', 'DEBE', 'HABER']);
-      for (final l in asiento.lineas) {
-        fila([
-          ...huecos.take(3),
-          l.codigo,
-          l.denominacion,
-          _monto(l.debe),
-          _monto(l.haber),
-        ]);
-      }
-      fila([
-        ...huecos.take(4),
-        'TOTAL',
-        _monto(asiento.totalDebe),
-        _monto(asiento.totalHaber),
-      ]);
-    }
 
     return lineas.join('\r\n');
   }

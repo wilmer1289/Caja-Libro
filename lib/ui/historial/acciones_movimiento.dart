@@ -5,17 +5,27 @@ import '../../core/formato.dart';
 import '../../core/tema.dart';
 import '../../datos/export/exportador_pdf.dart';
 import '../../datos/export/impresion.dart';
+import '../../datos/local/evidencias.dart';
+import '../../datos/local/selector_voucher.dart';
+import '../../datos/ocr/lector_voucher.dart';
+import '../../dominio/banco.dart';
 import '../../dominio/boleta.dart';
 import '../../dominio/enums.dart';
+import '../../dominio/lectura_voucher.dart';
 import '../../dominio/movimiento.dart';
+import '../../dominio/pcge.dart';
 import '../../dominio/recibo.dart';
 import '../../estado/estado_caja.dart';
 import '../formatos/recibo_hoja.dart';
+import '../widgets/voucher_adjunto.dart';
+import 'datos_voucher_dialogo.dart';
 
 /// La miniventana del "⋮" de cada movimiento: sus papeles.
 ///
 /// Ver, imprimir o descargar el recibo interno y la boleta. Si el movimiento
-/// se guardó sin recibo, acá se le puede emitir uno después.
+/// se guardó sin recibo, acá se le puede emitir uno después. Las operaciones
+/// por banco muestran además su voucher: se ve, se adjunta si faltó, y se
+/// completan sus datos.
 ///
 /// No hay "eliminar": un movimiento del libro no se borra. Si se anotó mal,
 /// se corrige con otro movimiento, como en cualquier libro contable.
@@ -48,10 +58,14 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
   String? _mensaje;
   bool _error = false;
 
+  /// El mensaje es un aviso, no un error: se hizo, pero hay algo que mirar.
+  bool _advertencia = false;
+
   Future<void> _ejecutar(Future<String?> Function() accion) async {
     setState(() {
       _ocupado = true;
       _mensaje = null;
+      _advertencia = false;
     });
     try {
       final texto = await accion();
@@ -65,12 +79,105 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
       if (mounted) {
         setState(() {
           _error = true;
-          _mensaje = 'No se pudo: $e';
+          // Los avisos del selector ya vienen escritos para el usuario.
+          _mensaje = e is FormatException ? e.message : 'No se pudo: $e';
         });
       }
     } finally {
       if (mounted) setState(() => _ocupado = false);
     }
+  }
+
+  /// Adjunta el voucher (o lo cambia) y, si el equipo puede leerlo, completa
+  /// lo que el movimiento no tenía. Lo que ya estaba anotado no se pisa.
+  Future<String?> _adjuntarVoucher(
+    EstadoCaja estado,
+    Movimiento m, {
+    required bool camara,
+  }) async {
+    final selector = SelectorVoucher.instancia;
+    final archivo = camara
+        ? await selector.tomarFoto()
+        : await selector.elegirArchivo();
+    if (archivo == null) return null;
+    final ruta = await AlmacenEvidencias.instancia.guardar(archivo);
+
+    LecturaVoucher? lectura;
+    try {
+      lectura = await LectorVoucher.leer(archivo);
+    } catch (_) {
+      // Sin lectura el voucher queda adjunto igual.
+    }
+    final completado = <String>[];
+    String? numero;
+    String? banco;
+    String? nombre;
+    if ((m.numeroTransaccion ?? '').trim().isEmpty &&
+        lectura?.numeroOperacion != null) {
+      numero = lectura!.numeroOperacion;
+      completado.add('el N° de operación');
+    }
+    final leido = lectura?.banco;
+    if (m.bancoTercero == null &&
+        leido != null &&
+        EntidadesBancarias.para(m.medio).contains(leido) &&
+        (m.medio == MedioPago.yape || m.tipo == Tipo.entro)) {
+      banco = leido;
+      completado.add('el banco');
+    }
+    if ((m.contraparte ?? '').trim().isEmpty && lectura?.nombre != null) {
+      nombre = lectura!.nombre;
+      completado.add('el nombre');
+    }
+    await estado.completarVoucher(
+      m,
+      rutaFoto: ruta,
+      numeroTransaccion: numero,
+      bancoTercero: banco,
+      contraparte: nombre,
+    );
+
+    final partes = [
+      'Voucher adjunto',
+      if (completado.isNotEmpty) 'se completó ${completado.join(', ')}',
+      if (lectura?.centavos case final c? when c != m.centavos)
+        'ojo: el voucher dice ${Formato.soles(c / 100)}',
+    ];
+    // El monto del libro no se cambia solo, pero que no coincida se avisa en
+    // ámbar, no en verde.
+    _advertencia = lectura?.centavos != null && lectura!.centavos != m.centavos;
+    return partes.join('; ');
+  }
+
+  Future<String?> _verVoucher(Movimiento m) async {
+    final archivo = await AlmacenEvidencias.instancia.leer(m.rutaFoto!);
+    if (archivo == null) {
+      throw const FormatException(
+        'El archivo del voucher no está en este equipo.',
+      );
+    }
+    if (!mounted) return null;
+    await VisorVoucher.abrir(
+      context,
+      archivo,
+      titulo: (m.numeroTransaccion ?? '').isEmpty
+          ? 'Voucher'
+          : 'Voucher · Oper. ${m.numeroTransaccion}',
+    );
+    return null;
+  }
+
+  Future<String?> _completarDatos(EstadoCaja estado, Movimiento m) async {
+    final datos = await DatosVoucherDialogo.abrir(context, m);
+    if (datos == null) return null;
+    await estado.completarVoucher(
+      m,
+      numeroTransaccion: datos.numero,
+      bancoTercero: datos.banco,
+      contraparte: datos.nombre,
+      documentoContraparte: datos.documento,
+    );
+    return 'Datos del voucher guardados';
   }
 
   @override
@@ -134,7 +241,8 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
                     const SizedBox(height: 2),
                     Text(
                       '${Formato.soles(m.monto)} · ${m.medio.etiqueta} · '
-                      '${Formato.fecha(m.fecha)} · Oper. N° ${m.numero}',
+                      '${Formato.fecha(m.fecha)} · Oper. N° ${m.numero}'
+                      '${(m.mercaderiaNombre ?? '').trim().isEmpty ? '' : ' · ${m.mercaderiaNombre!.trim()}'}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -255,6 +363,56 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
                         ],
                 ),
               ],
+              if (m.enBanco) ...[
+                const SizedBox(height: 10),
+                _Papel(
+                  icono: Icons.account_balance_outlined,
+                  titulo: m.tieneVoucher
+                      ? 'Voucher del banco'
+                      : 'Voucher del banco · sin adjuntar',
+                  detalle: _detalleBanco(m, negocio.entidadFinanciera),
+                  acciones: [
+                    if (m.tieneVoucher)
+                      _Accion(
+                        icono: Icons.visibility_outlined,
+                        texto: 'Ver',
+                        onTap: _ocupado
+                            ? null
+                            : () => _ejecutar(() => _verVoucher(m)),
+                      ),
+                    if (SelectorVoucher.instancia.puedeTomarFoto)
+                      _Accion(
+                        icono: Icons.photo_camera_outlined,
+                        texto: 'Tomar foto',
+                        principal: !m.tieneVoucher,
+                        onTap: _ocupado
+                            ? null
+                            : () => _ejecutar(
+                                () => _adjuntarVoucher(estado, m, camara: true),
+                              ),
+                      ),
+                    _Accion(
+                      icono: Icons.upload_file_rounded,
+                      texto: m.tieneVoucher ? 'Cambiar' : 'Adjuntar',
+                      principal:
+                          !m.tieneVoucher &&
+                          !SelectorVoucher.instancia.puedeTomarFoto,
+                      onTap: _ocupado
+                          ? null
+                          : () => _ejecutar(
+                              () => _adjuntarVoucher(estado, m, camara: false),
+                            ),
+                    ),
+                    _Accion(
+                      icono: Icons.edit_outlined,
+                      texto: 'Completar datos',
+                      onTap: _ocupado
+                          ? null
+                          : () => _ejecutar(() => _completarDatos(estado, m)),
+                    ),
+                  ],
+                ),
+              ],
               if (_mensaje != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
@@ -263,7 +421,11 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
                     style: TextStyle(
                       fontSize: 12.5,
                       fontWeight: FontWeight.w600,
-                      color: _error ? Tokens.salio : Tokens.entro,
+                      color: _error
+                          ? Tokens.salio
+                          : _advertencia
+                          ? const Color(0xFF6B520F)
+                          : Tokens.entro,
                     ),
                   ),
                 ),
@@ -274,6 +436,36 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
       ],
     );
   }
+}
+
+/// Lo que dice el voucher, en el orden del Formato 1.2. El ITF va al final y
+/// aclarado: lo descuenta el banco, pero no es un renglón del libro.
+String _detalleBanco(Movimiento m, String bancoNegocio) {
+  final tipo = EntidadesBancarias.tipoOperacion(
+    m.medio,
+    bancoTercero: m.bancoTercero,
+    bancoNegocio: bancoNegocio,
+  );
+  final numero = (m.numeroTransaccion ?? '').trim();
+  final nombre = (m.contraparte ?? '').trim();
+  final documento = (m.documentoContraparte ?? '').trim();
+  final cuenta = m.cuentaDelFormato;
+  final itf = m.itfCentavos;
+  return [
+    [tipo, ?m.bancoTercero].join(' · '),
+    numero.isEmpty
+        ? 'N° de operación: falta anotarlo'
+        : 'N° de operación: $numero',
+    if (nombre.isNotEmpty || documento.isNotEmpty)
+      [
+        if (nombre.isNotEmpty) nombre,
+        if (documento.isNotEmpty) documento,
+      ].join(' · '),
+    '${m.vinculo.etiqueta} · cuenta $cuenta ${Pcge.instancia.denominacion(cuenta)}',
+    itf > 0
+        ? 'ITF estimado ${Formato.soles(itf / 100)}: lo descuenta el banco, no va al libro'
+        : 'Sin ITF: menos de S/ 1,000',
+  ].join('\n');
 }
 
 /// Un papel del movimiento: qué es, su número y lo que se puede hacer con él.

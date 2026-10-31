@@ -1,5 +1,6 @@
 import 'package:uuid/uuid.dart';
 
+import '../../dominio/banco.dart';
 import '../../dominio/boleta.dart';
 import '../../dominio/categoria.dart';
 import '../../dominio/efectivo.dart';
@@ -10,6 +11,8 @@ import '../../dominio/importe.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/negocio.dart';
+import '../../dominio/mercaderia.dart';
+import '../../dominio/reglas_mercaderia.dart';
 import 'repositorio_movimientos.dart';
 
 /// La versión de "Mi Caja" que corre en la web (§2.4 dice que las pantallas
@@ -37,6 +40,36 @@ class RepositorioDemo extends RepositorioMovimientos {
   final List<Categoria> _categoriasPropias = [];
   final List<Jornada> _cajas = [];
   FondoNegocio? _fondo;
+  final List<Mercaderia> _mercaderias = [];
+
+  @override
+  Future<List<Mercaderia>> leerMercaderias() async => List.of(_mercaderias)
+    ..sort((a, b) => a.nombre.toLowerCase().compareTo(b.nombre.toLowerCase()));
+
+  @override
+  Future<Mercaderia?> mercaderiaPorId(String id) async {
+    for (final m in _mercaderias) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  @override
+  Future<Mercaderia> agregarMercaderia(String nombre) async {
+    final limpio = ReglasMercaderia.validarNombre(nombre);
+    if (_mercaderias.any(
+      (m) => Mercaderia.claveDe(m.nombre) == Mercaderia.claveDe(limpio),
+    )) {
+      throw ArgumentError('Ya existe una mercadería con ese nombre.');
+    }
+    final nueva = Mercaderia(
+      id: _uuid.v4(),
+      nombre: limpio,
+      creadoEn: DateTime.now(),
+    );
+    _mercaderias.add(nueva);
+    return nueva;
+  }
 
   // --- Negocio ---
 
@@ -120,12 +153,18 @@ class RepositorioDemo extends RepositorioMovimientos {
     String? contraparte,
     String? documentoContraparte,
     String? numeroTransaccion,
+    String? bancoTercero,
+    Vinculo vinculo = Vinculo.tercero,
+    DocumentoPago documentoPago = DocumentoPago.factura,
+    Situacion situacion = Situacion.cartera,
     String? cuentaAsociada,
     bool? conIgv,
     String? rutaFoto,
     bool conRecibo = false,
     String? tesorero,
     DetalleEfectivo? detalleEfectivo,
+    String? mercaderiaId,
+    int? costoCentavos,
   }) async {
     final ahora = DateTime.now();
     final categoria = Categoria.porId(categoriaId);
@@ -167,6 +206,11 @@ class RepositorioDemo extends RepositorioMovimientos {
       throw ArgumentError('La fecha es anterior a la apertura del negocio.');
     }
 
+    final mercaderia = await validarDatosMercaderia(
+      categoriaId: categoriaId,
+      mercaderiaId: mercaderiaId,
+      costoCentavos: costoCentavos,
+    );
     final afecto = conIgv ?? categoria.afectoIgv;
     final igv = afecto ? Igv.desagregar(centavos).igv : 0;
 
@@ -181,15 +225,31 @@ class RepositorioDemo extends RepositorioMovimientos {
       fecha: fecha,
       creadoEn: ahora,
       actualizadoEn: ahora,
-      cuentaAsociada: cuentaAsociada ?? categoria.cuentaAsociada,
+      // La cuenta elegida a mano manda; si no, la arma la regla del
+      // vínculo y el documento, como en el Excel.
+      cuentaAsociada:
+          cuentaAsociada ??
+          ReglasCuenta.para(
+            categoria,
+            vinculo: vinculo,
+            documento: documentoPago,
+            situacion: situacion,
+          ),
       igvCentavos: igv,
       contraparte: contraparte,
       documentoContraparte: documentoContraparte,
       numeroTransaccion: numeroTransaccion,
+      bancoTercero: bancoTercero,
+      vinculo: vinculo,
+      documentoPago: documentoPago,
+      situacion: situacion,
       numeroRecibo: conRecibo ? _proximoRecibo(tipo) : null,
       numeroBoleta: conBoleta ? _proximaBoleta : null,
       tesorero: conRecibo ? tesorero?.trim() : null,
       detalleEfectivo: detalleEfectivo,
+      mercaderiaId: mercaderia?.id,
+      mercaderiaNombre: mercaderia?.nombre,
+      costoCentavos: costoCentavos,
       rutaFoto: rutaFoto,
       sync: EstadoSync.local,
     );
@@ -214,7 +274,8 @@ class RepositorioDemo extends RepositorioMovimientos {
 
   @override
   Future<Movimiento> editar(Movimiento movimiento) async {
-    final actualizado = movimiento.copiarCon(
+    final validado = await validarEdicionMercaderia(movimiento);
+    final actualizado = validado.copiarCon(
       actualizadoEn: DateTime.now(),
       sync: EstadoSync.local,
     );

@@ -1,35 +1,42 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/formato.dart';
 import '../../core/tema.dart';
 import '../../datos/export/exportador_pdf.dart';
 import '../../datos/export/impresion.dart';
+import '../../datos/local/evidencias.dart';
+import '../../datos/local/selector_voucher.dart';
+import '../../datos/ocr/lector_voucher.dart';
+import '../../dominio/banco.dart';
 import '../../dominio/boleta.dart';
 import '../../dominio/categoria.dart';
 import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/igv.dart';
 import '../../dominio/importe.dart';
+import '../../dominio/lectura_voucher.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/pcge.dart';
 import '../../dominio/recibo.dart';
 import '../../estado/estado_caja.dart';
-import 'campo_cuenta.dart';
 import 'nueva_categoria.dart';
 import 'paso_comprobante.dart';
+import 'paso_datos.dart';
 import 'paso_efectivo.dart';
+import 'paso_mercaderia.dart';
+import 'paso_voucher.dart';
+import 'pie_registro.dart';
+import 'registro_componentes.dart';
 
 /// Formulario de registro. Se abre ya sabiendo si es entrada o salida: el
 /// usuario toca "Entró" o "Salió", nunca un formulario neutro donde después
 /// tiene que elegir el signo (§4.1).
 ///
-/// Los datos que pide el Formato 1.1 —documento de la contraparte, N° de la
-/// transacción bancaria— están, pero plegados. Una bodega anota monto,
-/// categoría y listo; una empresa formal abre "Datos para el comprobante" y
-/// completa el resto. Si todo eso estuviera siempre a la vista, el formulario
-/// de todos los días tendría nueve campos en lugar de cuatro.
+/// En efectivo, el documento de la contraparte está plegado: una bodega anota
+/// monto, categoría y listo. Por banco, todo lo que pide el Formato 1.2 —el
+/// voucher, el N° de operación, quién pagó, su vínculo— va en un paso propio,
+/// "Voucher", después de los datos.
 class RegistroHoja extends StatefulWidget {
   const RegistroHoja({
     super.key,
@@ -132,11 +139,13 @@ class RegistroHoja extends StatefulWidget {
   State<RegistroHoja> createState() => _RegistroHojaState();
 }
 
-/// Los pasos del registro. Sólo aparecen los que hacen falta: un cobro por
-/// Yape sin recibo se guarda en uno; en efectivo siempre se anota con cuánto
-/// pagó y el vuelto, porque de eso vive el cierre de caja.
+/// Los pasos del registro. Sólo aparecen los que hacen falta: en efectivo
+/// siempre se anota con cuánto pagó y el vuelto, porque de eso vive el cierre
+/// de caja; por banco, el voucher, porque de eso vive el Libro Bancos.
 enum _Paso {
   datos('Datos'),
+  mercaderia('Mercadería'),
+  voucher('Voucher'),
   pago('Pago en efectivo'),
   comprobante('Comprobante');
 
@@ -147,6 +156,35 @@ enum _Paso {
 class _RegistroHojaState extends State<RegistroHoja> {
   final _monto = TextEditingController();
   final _concepto = TextEditingController();
+  final _costoMercaderia = TextEditingController();
+  String? _mercaderiaId;
+  bool _ventaEsServicio = false;
+
+  bool get _compraMercaderia => _categoriaId == 'mercaderia';
+  bool get _venta => _categoriaId == 'ventas';
+  bool get _pideMercaderia => _compraMercaderia || _venta;
+
+  String? get _errorMercaderia {
+    if (!_intentoMercaderia || !_pideMercaderia || _mercaderiaId != null) {
+      return null;
+    }
+    if (_venta && _ventaEsServicio) return null;
+    return 'Elige o crea un tipo de mercadería';
+  }
+
+  String? get _errorCostoMercaderia {
+    if (!_intentoMercaderia ||
+        !_venta ||
+        _ventaEsServicio ||
+        _mercaderiaId == null) {
+      return null;
+    }
+    final costo = Importe.leer(_costoMercaderia.text);
+    return costo == null || costo <= 0
+        ? 'Escribe un costo en soles mayor que cero'
+        : null;
+  }
+
   final _contraparte = TextEditingController();
   final _documento = TextEditingController();
   final _transaccion = TextEditingController();
@@ -155,10 +193,6 @@ class _RegistroHojaState extends State<RegistroHoja> {
   late DateTime _fecha;
   late MedioPago _medio;
   String? _categoriaId;
-
-  /// El usuario puede desmarcar el IGV en un caso puntual: no toda compra de
-  /// mercadería viene con factura.
-  bool? _conIgv;
 
   bool _masDatos = false;
 
@@ -173,6 +207,10 @@ class _RegistroHojaState extends State<RegistroHoja> {
   /// Los errores aparecen recién cuando el usuario ya intentó guardar. Validar
   /// en vivo no es gritarle apenas abre la pantalla.
   bool _intentoGuardar = false;
+
+  /// El paso de mercadería valida por su cuenta: llegar a él no es haberlo
+  /// intentado completar.
+  bool _intentoMercaderia = false;
   bool _guardando = false;
 
   // --- Los pasos ---
@@ -184,20 +222,28 @@ class _RegistroHojaState extends State<RegistroHoja> {
   /// Con qué billetes se pagó (en efectivo es un paso fijo).
   Conteo _entregado = Conteo.vacio;
 
-  /// El vuelto que cambió a mano quien atiende. Null = el sugerido.
+  /// El vuelto que registró manualmente quien atiende. Null = aún no anotado.
   Conteo? _vueltoManual;
   bool _intentoPago = false;
 
   bool _tesoreroFijo = false;
-  bool _imprimirRecibo = true;
-  bool _imprimirBoleta = false;
+
+  // --- El voucher (sólo por banco) ---
+  ArchivoVoucher? _voucher;
+  bool _leyendo = false;
+  LecturaVoucher? _lectura;
+  String? _errorLectura;
+  String? _bancoTercero;
+  Vinculo _vinculo = Vinculo.tercero;
+  DocumentoPago _documentoPago = DocumentoPago.factura;
+  Situacion _situacion = Situacion.cartera;
+  bool _intentoVoucher = false;
 
   Categoria? get _categoria =>
       _categoriaId == null ? null : Categoria.porId(_categoriaId!);
 
-  /// Si la operación lleva IGV: lo que diga la categoría, salvo que el usuario
-  /// lo haya cambiado a mano.
-  bool get _afectoIgv => _conIgv ?? (_categoria?.afectoIgv ?? false);
+  /// El IGV se determina automáticamente por la categoría.
+  bool get _afectoIgv => _categoria?.afectoIgv ?? false;
 
   bool get _emiteBoleta =>
       _categoria != null && Boleta.corresponde(_categoria!);
@@ -206,9 +252,12 @@ class _RegistroHojaState extends State<RegistroHoja> {
   bool get _exigeCliente => _emiteBoleta && Boleta.exigeCliente(_centavos ?? 0);
 
   bool get _enEfectivo => _medio == MedioPago.efectivo;
+  bool get _enBanco => _medio.cuenta == Cuenta.banco;
 
   List<_Paso> get _pasos => [
     _Paso.datos,
+    if (_pideMercaderia) _Paso.mercaderia,
+    if (_enBanco) _Paso.voucher,
     if (_enEfectivo) _Paso.pago,
     if (_conRecibo) _Paso.comprobante,
   ];
@@ -218,9 +267,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
   int get _vueltoEsperado => _entregado.total - (_centavos ?? 0);
 
-  Conteo get _vuelto =>
-      _vueltoManual ??
-      Conteo.sugerir(_vueltoEsperado < 0 ? 0 : _vueltoEsperado);
+  Conteo get _vuelto => _vueltoManual ?? Conteo.vacio;
 
   @override
   void initState() {
@@ -238,6 +285,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
   @override
   void dispose() {
+    _costoMercaderia.dispose();
     _monto.dispose();
     _concepto.dispose();
     _contraparte.dispose();
@@ -275,8 +323,12 @@ class _RegistroHojaState extends State<RegistroHoja> {
     return null;
   }
 
+  /// El cliente se pide donde está su campo: en efectivo en los datos, por
+  /// banco en el voucher.
+  bool get _intentoCliente => _enBanco ? _intentoVoucher : _intentoGuardar;
+
   String? get _errorNombre {
-    if (!_intentoGuardar || !_exigeCliente) return null;
+    if (!_intentoCliente || !_exigeCliente) return null;
     if (_contraparte.text.trim().isEmpty) {
       return 'Desde S/ 700 la boleta lleva el nombre del cliente';
     }
@@ -284,7 +336,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
   }
 
   String? get _errorDocumento {
-    if (!_intentoGuardar || !_exigeCliente) return null;
+    if (!_intentoCliente || !_exigeCliente) return null;
     final doc = _documento.text.trim();
     if (doc.isEmpty) return 'Desde S/ 700 la boleta lleva el DNI o RUC';
     if (doc.length != 8 && doc.length != 11) {
@@ -297,8 +349,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
     if (!_intentoPago || _paso != _Paso.pago) return null;
     final monto = _centavos ?? 0;
     if (_entregado.estaVacio) {
-      return 'Marca con qué billetes o monedas se pagó. Si fue justo, toca '
-          '"Exacto".';
+      return 'Registra los billetes y monedas entregados.';
     }
     if (_entregado.total < monto) {
       return 'Lo entregado (${Formato.soles(_entregado.total / 100)}) no '
@@ -309,6 +360,51 @@ class _RegistroHojaState extends State<RegistroHoja> {
           'debería ser ${Formato.soles(_vueltoEsperado / 100)}.';
     }
     return null;
+  }
+
+  /// El Formato 1.2 tiene una columna para el N° de la transacción bancaria:
+  /// sin él, la operación no se puede ubicar en el estado de cuenta.
+  String? get _errorTransaccion {
+    if (!_intentoVoucher || !_enBanco) return null;
+    return _transaccion.text.trim().isEmpty
+        ? 'Escribe el N° de operación que trae el voucher'
+        : null;
+  }
+
+  /// Hasta S/ 700 el voucher es opcional; desde ahí, obligatorio. Es el mismo
+  /// tope desde el que la boleta pide el DNI.
+  String? get _errorVoucher {
+    if (!_intentoVoucher || !_enBanco || _voucher != null) return null;
+    return (_centavos ?? 0) >= Movimiento.umbralVoucherCentavos
+        ? 'Desde S/ 700 adjunta el voucher: es la prueba de la operación.'
+        : null;
+  }
+
+  /// El documento y la situación sólo cuentan donde se preguntan.
+  DocumentoPago get _documentoFinal => (_categoria?.cancelaDocumento ?? false)
+      ? _documentoPago
+      : DocumentoPago.factura;
+
+  Situacion get _situacionFinal =>
+      (_categoria?.cancelaDocumento ?? false) && widget.tipo == Tipo.entro
+      ? _situacion
+      : Situacion.cartera;
+
+  /// El vínculo se elige en el paso del voucher: en efectivo no se ve, así
+  /// que no se aplica.
+  Vinculo get _vinculoFinal => _enBanco ? _vinculo : Vinculo.tercero;
+
+  /// La cuenta que irá al formato, para mostrarla mientras se elige.
+  String get _cuentaDelFormato {
+    final c = _categoria;
+    if (c == null) return '';
+    if (c.pideCuenta) return _cuentaElegida ?? c.cuentaAsociada;
+    return ReglasCuenta.para(
+      c,
+      vinculo: _vinculoFinal,
+      documento: _documentoFinal,
+      situacion: _situacionFinal,
+    );
   }
 
   /// Ley de Bancarización: desde S/ 2,000 no se registra en efectivo. Antes
@@ -343,12 +439,12 @@ class _RegistroHojaState extends State<RegistroHoja> {
   void _elegirCategoria(Categoria c) {
     setState(() {
       _categoriaId = c.id;
+      _mercaderiaId = null;
+      _costoMercaderia.clear();
+      _ventaEsServicio = false;
+      _intentoMercaderia = false;
       // La cuenta elegida es de "Otros": con otra categoría ya no aplica.
       if (!c.pideCuenta) _cuentaElegida = null;
-      // Al cambiar de categoría vuelve a mandar lo que ella dice del IGV: si
-      // el usuario lo desmarcó para una compra sin factura, no tiene por qué
-      // arrastrarse a la siguiente.
-      _conIgv = null;
       if (_exigeCliente) _masDatos = true;
     });
   }
@@ -374,8 +470,112 @@ class _RegistroHojaState extends State<RegistroHoja> {
         !_bloqueaCajaCerrada;
   }
 
+  /// El paso de mercadería está completo. El aviso de costo no bloquea: sólo
+  /// se exige que el costo exista cuando hay un tipo elegido en una venta.
+  bool _mercaderiaValida() {
+    setState(() {
+      _intentoMercaderia = true;
+      _errorGuardar = null;
+    });
+    return _errorMercaderia == null && _errorCostoMercaderia == null;
+  }
+
+  bool _voucherValido() {
+    setState(() {
+      _intentoVoucher = true;
+      _errorGuardar = null;
+    });
+    return _errorTransaccion == null &&
+        _errorVoucher == null &&
+        _errorNombre == null &&
+        _errorDocumento == null;
+  }
+
+  /// Toma la foto o elige el archivo, lo adjunta y, si el equipo puede, lo
+  /// lee para llenar lo que falte.
+  Future<void> _adjuntar({required bool camara}) async {
+    final selector = SelectorVoucher.instancia;
+    ArchivoVoucher? archivo;
+    try {
+      archivo = camara
+          ? await selector.tomarFoto()
+          : await selector.elegirArchivo();
+    } on FormatException catch (e) {
+      if (mounted) setState(() => _errorLectura = e.message);
+      return;
+    } catch (e) {
+      if (mounted) {
+        setState(() => _errorLectura = 'No se pudo abrir el voucher: $e');
+      }
+      return;
+    }
+    if (archivo == null || !mounted) return;
+
+    final puedeLeer = LectorVoucher.disponible;
+    setState(() {
+      _voucher = archivo;
+      _lectura = null;
+      _errorLectura = null;
+      _leyendo = puedeLeer;
+    });
+    if (!puedeLeer) return;
+
+    try {
+      final lectura = await LectorVoucher.leer(archivo);
+      if (!mounted) return;
+      setState(() {
+        _lectura = lectura;
+        _aplicarLectura(lectura);
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _errorLectura =
+              'El voucher quedó adjunto, pero no se pudo leer. Escribe los '
+              'datos a mano.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _leyendo = false);
+    }
+  }
+
+  /// Llena sólo lo que está vacío: lo que el usuario ya escribió manda.
+  void _aplicarLectura(LecturaVoucher? lectura) {
+    if (lectura == null) return;
+    if (_transaccion.text.trim().isEmpty && lectura.numeroOperacion != null) {
+      _transaccion.text = lectura.numeroOperacion!;
+    }
+    if (_contraparte.text.trim().isEmpty && lectura.nombre != null) {
+      _contraparte.text = lectura.nombre!;
+    }
+    // En un pago por transferencia el voucher es del banco del negocio, no
+    // del otro: ahí el banco leído no dice nada del tercero.
+    final banco = lectura.banco;
+    if (_bancoTercero == null &&
+        banco != null &&
+        EntidadesBancarias.para(_medio).contains(banco) &&
+        (_medio == MedioPago.yape || widget.tipo == Tipo.entro)) {
+      _bancoTercero = banco;
+    }
+  }
+
+  void _usarMontoLeido() {
+    final centavos = _lectura?.centavos;
+    if (centavos == null) return;
+    setState(() => _monto.text = (centavos / 100).toStringAsFixed(2));
+  }
+
+  void _usarFechaLeida() {
+    final fecha = _lectura?.fecha;
+    if (fecha == null || fecha.isAfter(DateTime.now())) return;
+    setState(() => _fecha = fecha);
+  }
+
   void _continuar() {
     if (_paso == _Paso.datos && !_datosValidos()) return;
+    if (_paso == _Paso.mercaderia && !_mercaderiaValida()) return;
+    if (_paso == _Paso.voucher && !_voucherValido()) return;
     if (_paso == _Paso.pago) {
       setState(() => _intentoPago = true);
       if (_errorPago != null) return;
@@ -409,6 +609,18 @@ class _RegistroHojaState extends State<RegistroHoja> {
       documentoContraparte: _limpio(_documento),
       tesorero: _tesorero.text.trim(),
       detalleEfectivo: _detalleFinal(),
+      mercaderiaId: _pideMercaderia ? _mercaderiaId : null,
+      mercaderiaNombre: _pideMercaderia
+          ? context
+                .read<EstadoCaja>()
+                .mercaderias
+                .where((m) => m.id == _mercaderiaId)
+                .firstOrNull
+                ?.nombre
+          : null,
+      costoCentavos: _venta
+          ? (_ventaEsServicio ? 0 : Importe.leer(_costoMercaderia.text))
+          : null,
       sync: EstadoSync.local,
     );
   }
@@ -431,14 +643,26 @@ class _RegistroHojaState extends State<RegistroHoja> {
       ? DetalleEfectivo(entregado: _entregado, vuelto: _vuelto)
       : null;
 
-  bool get _vaAImprimir =>
-      (_conRecibo && _imprimirRecibo) || (_emiteBoleta && _imprimirBoleta);
+  bool get _hayComprobanteParaImprimir => _conRecibo || _emiteBoleta;
 
-  Future<void> _guardar() async {
+  /// `imprimir` dice qué papeles mandar a la impresora después de guardar;
+  /// null es guardar sin imprimir.
+  Future<void> _guardar({QueImprimir? imprimir}) async {
     if (_guardando) return;
     if (!_datosValidos()) {
       // Si falla algo del primer paso estando en otro, se vuelve a él.
       if (_indicePaso != 0) setState(() => _indicePaso = 0);
+      return;
+    }
+    if (!_mercaderiaValida()) {
+      final paso = _pasos.indexOf(_Paso.mercaderia);
+      if (paso >= 0 && _indicePaso != paso) {
+        setState(() => _indicePaso = paso);
+      }
+      return;
+    }
+    if (_enBanco && !_voucherValido()) {
+      setState(() => _indicePaso = _pasos.indexOf(_Paso.voucher));
       return;
     }
     if (_enEfectivo) {
@@ -461,6 +685,11 @@ class _RegistroHojaState extends State<RegistroHoja> {
     final cuenta = categoria.pideCuenta ? _cuentaElegida : null;
 
     try {
+      // El voucher se guarda primero: el movimiento lleva su nombre.
+      final voucher = _enBanco ? _voucher : null;
+      final rutaVoucher = voucher == null
+          ? null
+          : await AlmacenEvidencias.instancia.guardar(voucher);
       final nuevo = await estado.registrar(
         tipo: widget.tipo,
         centavos: _centavos!,
@@ -471,31 +700,41 @@ class _RegistroHojaState extends State<RegistroHoja> {
         fecha: _fecha,
         contraparte: _limpio(_contraparte),
         documentoContraparte: _limpio(_documento),
-        numeroTransaccion: _medio.cuenta == Cuenta.banco
-            ? _limpio(_transaccion)
-            : null,
+        numeroTransaccion: _enBanco ? _limpio(_transaccion) : null,
+        bancoTercero: _enBanco ? _bancoTercero : null,
+        vinculo: _vinculoFinal,
+        documentoPago: _documentoFinal,
+        situacion: _situacionFinal,
+        rutaFoto: rutaVoucher,
         conIgv: _afectoIgv,
         conRecibo: _conRecibo,
         tesorero: _tesorero.text,
         detalleEfectivo: _detalleFinal(),
+        mercaderiaId: _pideMercaderia ? _mercaderiaId : null,
+        costoCentavos: _venta
+            ? (_ventaEsServicio ? 0 : Importe.leer(_costoMercaderia.text))
+            : null,
       );
       if (_conRecibo && _tesoreroFijo) {
         await estado.usarTesorero(_tesorero.text);
       }
 
-      // Recién ahora, con los números asignados, se imprime.
+      // Recién ahora, con los números asignados, se imprime si se pulsó
+      // explícitamente el ícono de impresora.
       String? avisoImpresion;
-      if (_vaAImprimir) {
+      if (imprimir != null && _hayComprobanteParaImprimir) {
         final negocio = estado.negocio;
+        final imprimeRecibo = imprimir != QueImprimir.boleta;
+        final imprimeBoleta = imprimir != QueImprimir.recibo;
         try {
-          if (_conRecibo && _imprimirRecibo) {
+          if (_conRecibo && imprimeRecibo) {
             final recibo = Recibo(negocio: negocio, movimiento: nuevo);
             await Impresion.imprimir(
               await ExportadorPdf.recibo(recibo),
               ExportadorPdf.nombreRecibo(recibo),
             );
           }
-          if (_emiteBoleta && _imprimirBoleta && nuevo.numeroBoleta != null) {
+          if (_emiteBoleta && imprimeBoleta && nuevo.numeroBoleta != null) {
             final boleta = Boleta(negocio: negocio, movimiento: nuevo);
             await Impresion.imprimir(
               await ExportadorPdf.boleta(boleta),
@@ -527,410 +766,182 @@ class _RegistroHojaState extends State<RegistroHoja> {
     final color = entro ? Tokens.entro : Tokens.salio;
     final centavos = _centavos;
 
-    // --- Las piezas del primer paso. Se arman una vez y se acomodan después
-    // en una columna (celular, ventana angosta) o en dos (escritorio). ---
-
-    final monto = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _Etiqueta('¿Cuánto fue?'),
-        TextField(
-          controller: _monto,
-          autofocus: true,
-          // Enter sigue: guarda si no hay más pasos, o pasa al siguiente.
-          textInputAction: TextInputAction.done,
-          onSubmitted: (_) => _ultimoPaso ? _guardar() : _continuar(),
-          // Teclado numérico con decimales (§5, entradas optimizadas).
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
-          ],
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.5,
-            color: color,
-          ),
-          decoration: InputDecoration(
-            prefixText: 'S/ ',
-            prefixStyle: TextStyle(
-              fontFamily: Tokens.tipografia,
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: color.withValues(alpha: 0.7),
-            ),
-            hintText: '0.00',
-            errorText: _errorMonto,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 14,
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(Tokens.radio),
-              borderSide: BorderSide(color: color, width: 1.8),
-            ),
-          ),
-          onChanged: (_) => setState(() {
-            if (_exigeCliente) _masDatos = true;
-          }),
-        ),
-
-        // El desglose del IGV va pegado al monto, no en otra sección: es una
-        // lectura del mismo número, no un dato aparte que haya que llenar.
-        if (_categoria?.afectoIgv ?? false) ...[
-          const SizedBox(height: 10),
-          _Igv(
-            activo: _afectoIgv,
-            centavos: centavos,
-            onCambiar: (v) => setState(() => _conIgv = v),
-          ),
-        ],
-
-        if (_bloqueaBancarizacion) ...[
-          const SizedBox(height: 10),
-          const _Aviso(
-            'Desde S/ 2,000 no se puede en efectivo (Ley de Bancarización). '
-            'Elige Yape / Plin, transferencia, depósito o tarjeta para poder '
-            'guardar.',
-            bloquea: true,
-          ),
-        ],
-      ],
-    );
-
-    final categorias = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _Etiqueta('¿En qué?'),
-        _Categorias(
-          tipo: widget.tipo,
-          elegida: _categoriaId,
-          onElegir: _elegirCategoria,
-          // El "+" es para lo que se paga seguido y no está en la lista.
-          onAgregar: widget.tipo == Tipo.salio ? _agregarCategoria : null,
-        ),
-        if (_errorCategoria != null) ...[
-          const SizedBox(height: 6),
-          Text(
-            _errorCategoria!,
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.error,
-            ),
-          ),
-        ],
-        // "Otros" abre el plan contable: se escribe y se elige la cuenta.
-        AnimatedSize(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-          alignment: Alignment.topCenter,
-          child: (_categoria?.pideCuenta ?? false)
-              ? Padding(
-                  padding: const EdgeInsets.only(top: 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const _Etiqueta('¿En qué exactamente?'),
-                      CampoCuentaPcge(
-                        tipo: widget.tipo,
-                        elegida: _cuentaElegida,
-                        error: _errorCuenta,
-                        onElegir: (c) => setState(() => _cuentaElegida = c),
-                      ),
-                    ],
-                  ),
-                )
-              : const SizedBox(width: double.infinity),
-        ),
-      ],
-    );
-
-    final medios = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _Etiqueta('¿Cómo se pagó?'),
-        _Medios(elegido: _medio, onElegir: (m) => setState(() => _medio = m)),
-        if (_bloqueaCajaCerrada) ...[
-          const SizedBox(height: 10),
-          // El botón para abrirla va en el pie, que siempre está a la vista.
-          const _Aviso(
-            'La caja está cerrada y el efectivo entra y sale de ella: '
-            'primero ábrela, o elige otro medio de pago.',
-            bloquea: true,
-          ),
-        ],
-      ],
-    );
-
-    final cuando = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _Etiqueta('¿Cuándo?'),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: _elegirFecha,
-            icon: const Icon(Icons.calendar_today_outlined, size: 18),
-            label: Text(Formato.fechaRelativa(_fecha)),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(0, 50),
-              alignment: Alignment.centerLeft,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-            ),
-          ),
-        ),
-      ],
-    );
-
-    final detalle = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _Etiqueta('Detalle (opcional)'),
-        TextField(
-          controller: _concepto,
-          textCapitalization: TextCapitalization.sentences,
-          decoration: const InputDecoration(
-            hintText: 'Ej. Venta del día, pago de luz…',
-          ),
-        ),
-      ],
-    );
-
-    final contraparte = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _Etiqueta(
-          _exigeCliente
-              ? 'Cliente (obligatorio desde S/ 700)'
-              : entro
-              ? 'Cliente (opcional)'
-              : 'Proveedor (opcional)',
-        ),
-        TextField(
-          controller: _contraparte,
-          textCapitalization: TextCapitalization.words,
-          decoration: InputDecoration(
-            hintText: 'Nombre',
-            errorText: _errorNombre,
-          ),
-          onChanged: (_) => setState(() {}),
-        ),
-      ],
-    );
-
-    final masDatos = _MasDatos(
-      abierto: _masDatos,
-      onCambiar: (v) => setState(() => _masDatos = v),
-      children: [
-        _Etiqueta(_exigeCliente ? 'DNI o RUC (obligatorio)' : 'DNI o RUC'),
-        TextField(
-          controller: _documento,
-          keyboardType: TextInputType.number,
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9]')),
-            LengthLimitingTextInputFormatter(11),
-          ],
-          decoration: InputDecoration(
-            hintText: 'Va impreso en el recibo y la boleta',
-            errorText: _errorDocumento,
-          ),
-          onChanged: (_) => setState(() {}),
-        ),
-        if (_medio.cuenta == Cuenta.banco) ...[
-          const SizedBox(height: 14),
-          const _Etiqueta('N° de transacción bancaria'),
-          TextField(
-            controller: _transaccion,
-            decoration: const InputDecoration(
-              hintText: 'El código del voucher o la operación',
-            ),
-          ),
-        ],
-      ],
-    );
-
-    // Lo que el negocio entrega: recibo, detalle del efectivo, boleta.
-    final comprobantes = _Comprobantes(
+    final pasoDatos = PasoDatos(
       tipo: widget.tipo,
+      enDialogo: widget.enDialogo,
+      monto: _monto,
+      centavos: centavos,
+      errorMonto: _errorMonto,
+      categoria: _categoria,
+      categoriaId: _categoriaId,
+      errorCategoria: _errorCategoria,
+      cuentaElegida: _cuentaElegida,
+      errorCuenta: _errorCuenta,
+      medio: _medio,
+      fecha: _fecha,
+      concepto: _concepto,
+      contraparte: _contraparte,
+      documento: _documento,
+      transaccion: _transaccion,
+      exigeCliente: _exigeCliente,
+      errorNombre: _errorNombre,
+      errorDocumento: _errorDocumento,
+      masDatos: _masDatos,
       conRecibo: _conRecibo,
-      onRecibo: (v) => setState(() {
-        _conRecibo = v;
-        _indicePaso = 0;
-      }),
       enEfectivo: _enEfectivo,
       emiteBoleta: _emiteBoleta,
-      exigeCliente: _exigeCliente,
+      bloqueaBancarizacion: _bloqueaBancarizacion,
+      bloqueaCajaCerrada: _bloqueaCajaCerrada,
+      onMontoChanged: (_) => setState(() {
+        if (_exigeCliente) _masDatos = true;
+      }),
+      onMontoSubmitted: (_) => _ultimoPaso ? _guardar() : _continuar(),
+      onContraparteChanged: (_) => setState(() {}),
+      onDocumentoChanged: (_) => setState(() {}),
+      onElegirCategoria: _elegirCategoria,
+      onAgregarCategoria: widget.tipo == Tipo.salio ? _agregarCategoria : null,
+      onElegirCuenta: (cuenta) => setState(() => _cuentaElegida = cuenta),
+      onElegirMedio: (medio) => setState(() => _medio = medio),
+      onElegirFecha: _elegirFecha,
+      onCambiarMasDatos: (abierto) => setState(() => _masDatos = abierto),
+      onCambiarRecibo: (valor) => setState(() {
+        _conRecibo = valor;
+        _indicePaso = 0;
+      }),
     );
 
-    final cabecera = _Cabecera(
+    final pasoMercaderia = PasoMercaderia(
+      venta: _venta,
+      seleccionada: _mercaderiaId,
+      esServicio: _ventaEsServicio,
+      costo: _costoMercaderia,
+      fecha: _fecha,
+      errorTipo: _errorMercaderia,
+      errorCosto: _errorCostoMercaderia,
+      onSeleccionar: (id) => setState(() {
+        _mercaderiaId = id;
+        if (id != null) {
+          _ventaEsServicio = false;
+        } else {
+          _costoMercaderia.clear();
+        }
+      }),
+      onServicio: (esServicio) => setState(() {
+        _ventaEsServicio = esServicio;
+        _mercaderiaId = null;
+        _costoMercaderia.clear();
+      }),
+      onCosto: () => setState(() {}),
+    );
+
+    final pasoPago = PasoEfectivo(
+      tipo: widget.tipo,
+      monto: centavos ?? 0,
+      entregado: _entregado,
+      vuelto: _vuelto,
+      onEntregado: (conteo) => setState(() {
+        _entregado = conteo;
+        _vueltoManual = null;
+      }),
+      onVuelto: (conteo) => setState(() => _vueltoManual = conteo),
+      error: _errorPago,
+    );
+
+    final estado = context.watch<EstadoCaja>();
+    final pasoVoucher = PasoVoucher(
+      tipo: widget.tipo,
+      medio: _medio,
+      categoria: _categoria,
+      centavos: centavos ?? 0,
+      fecha: _fecha,
+      enDialogo: widget.enDialogo,
+      cuenta: _cuentaDelFormato,
+      bancoNegocio: estado.negocio.entidadFinanciera,
+      transaccion: _transaccion,
+      contraparte: _contraparte,
+      documento: _documento,
+      bancoTercero: _bancoTercero,
+      vinculo: _vinculo,
+      documentoPago: _documentoPago,
+      situacion: _situacion,
+      archivo: _voucher,
+      leyendo: _leyendo,
+      lectura: _lectura,
+      errorLectura: _errorLectura,
+      errorTransaccion: _errorTransaccion,
+      errorVoucher: _errorVoucher,
+      errorNombre: _errorNombre,
+      errorDocumento: _errorDocumento,
+      exigeCliente: _exigeCliente,
+      duplicado: _enBanco
+          ? estado.conNumeroDeOperacion(_transaccion.text)
+          : null,
+      onTomarFoto: () => _adjuntar(camara: true),
+      onElegirArchivo: () => _adjuntar(camara: false),
+      onQuitarArchivo: () => setState(() {
+        _voucher = null;
+        _lectura = null;
+        _errorLectura = null;
+      }),
+      onBanco: (banco) => setState(() => _bancoTercero = banco),
+      onVinculo: (vinculo) => setState(() => _vinculo = vinculo),
+      onDocumentoPago: (documento) =>
+          setState(() => _documentoPago = documento),
+      onSituacion: (situacion) => setState(() => _situacion = situacion),
+      onUsarMonto: _usarMontoLeido,
+      onUsarFecha: _usarFechaLeida,
+      onCambio: (_) => setState(() {}),
+    );
+
+    final pasoComprobante = PasoComprobante(
+      movimiento: _provisional(),
+      negocio: context.watch<EstadoCaja>().negocio,
+      conBoleta: _emiteBoleta,
+      tesorero: _tesorero,
+      tesoreroFijo: _tesoreroFijo,
+      onTesoreroFijo: (valor) => setState(() => _tesoreroFijo = valor),
+    );
+
+    final cuerpo = switch (_paso) {
+      _Paso.datos => pasoDatos,
+      _Paso.mercaderia => pasoMercaderia,
+      _Paso.voucher => pasoVoucher,
+      _Paso.pago => pasoPago,
+      _Paso.comprobante => pasoComprobante,
+    };
+
+    final cabecera = CabeceraRegistro(
       entro: entro,
       color: color,
       enDialogo: widget.enDialogo,
       onCerrar: () => Navigator.of(context).pop(),
     );
 
-    Widget pasoPago() => PasoEfectivo(
-      tipo: widget.tipo,
-      monto: centavos ?? 0,
-      entregado: _entregado,
-      vuelto: _vuelto,
-      onEntregado: (c) => setState(() {
-        _entregado = c;
-        _vueltoManual = null;
-      }),
-      onVuelto: (c) => setState(() => _vueltoManual = c),
-      onSugerirVuelto: () => setState(() => _vueltoManual = null),
-      error: _errorPago,
-    );
-
-    Widget pasoComprobante() => PasoComprobante(
-      movimiento: _provisional(),
-      negocio: context.watch<EstadoCaja>().negocio,
-      conBoleta: _emiteBoleta,
-      tesorero: _tesorero,
-      tesoreroFijo: _tesoreroFijo,
-      onTesoreroFijo: (v) => setState(() => _tesoreroFijo = v),
-    );
-
-    // --- En el diálogo de escritorio: dos columnas. A la izquierda lo que
-    // se llena siempre (cuánto, en qué, cómo); a la derecha lo que se llena
-    // a veces (cuándo, detalle, cliente, comprobantes). ---
     if (widget.enDialogo) {
-      return LayoutBuilder(
-        builder: (context, medidas) {
-          final dosColumnas = medidas.maxWidth >= 720;
-
-          final datos = dosColumnas
-              ? Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      flex: 11,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          monto,
-                          const SizedBox(height: 22),
-                          categorias,
-                          const SizedBox(height: 22),
-                          medios,
-                        ],
-                      ),
-                    ),
-                    Container(
-                      width: 1,
-                      margin: const EdgeInsets.symmetric(horizontal: 28),
-                      height: 360,
-                      color: Tokens.borde,
-                    ),
-                    Expanded(
-                      flex: 9,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          cuando,
-                          const SizedBox(height: 18),
-                          detalle,
-                          const SizedBox(height: 18),
-                          contraparte,
-                          const SizedBox(height: 6),
-                          masDatos,
-                          const SizedBox(height: 14),
-                          comprobantes,
-                        ],
-                      ),
-                    ),
-                  ],
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    monto,
-                    const SizedBox(height: 18),
-                    categorias,
-                    const SizedBox(height: 18),
-                    medios,
-                    const SizedBox(height: 18),
-                    cuando,
-                    const SizedBox(height: 18),
-                    detalle,
-                    const SizedBox(height: 14),
-                    contraparte,
-                    const SizedBox(height: 6),
-                    masDatos,
-                    const SizedBox(height: 14),
-                    comprobantes,
-                  ],
-                );
-
-          final cuerpo = switch (_paso) {
-            _Paso.datos => datos,
-            _Paso.pago => pasoPago(),
-            _Paso.comprobante => pasoComprobante(),
-          };
-
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              cabecera,
-              if (_pasos.length > 1)
-                _IndicadorPasos(
-                  pasos: [for (final p in _pasos) p.etiqueta],
-                  actual: _indicePaso,
-                  color: color,
-                ),
-              Flexible(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(28, 22, 28, 22),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    child: KeyedSubtree(key: ValueKey(_paso), child: cuerpo),
-                  ),
-                ),
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          cabecera,
+          if (_pasos.length > 1)
+            IndicadorPasos(
+              pasos: [for (final paso in _pasos) paso.etiqueta],
+              actual: _indicePaso,
+              color: color,
+            ),
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(28, 22, 28, 22),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: KeyedSubtree(key: ValueKey(_paso), child: cuerpo),
               ),
-              // El pie queda fijo: por largo que sea el formulario, el
-              // botón de guardar siempre está a la vista.
-              _pie(color, entro),
-            ],
-          );
-        },
+            ),
+          ),
+          _pie(color),
+        ],
       );
     }
-
-    // --- En el celular: una columna, en una hoja que sube desde abajo. ---
-    final cuerpoMovil = switch (_paso) {
-      _Paso.datos => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          monto,
-          const SizedBox(height: 18),
-          categorias,
-          const SizedBox(height: 18),
-          medios,
-          const SizedBox(height: 18),
-          cuando,
-          const SizedBox(height: 18),
-          detalle,
-          const SizedBox(height: 14),
-          contraparte,
-          const SizedBox(height: 6),
-          masDatos,
-          const SizedBox(height: 14),
-          comprobantes,
-        ],
-      ),
-      _Paso.pago => pasoPago(),
-      _Paso.comprobante => pasoComprobante(),
-    };
 
     final contenido = Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
@@ -952,25 +963,24 @@ class _RegistroHojaState extends State<RegistroHoja> {
           cabecera,
           if (_pasos.length > 1) ...[
             const SizedBox(height: 10),
-            _IndicadorPasos(
-              pasos: [for (final p in _pasos) p.etiqueta],
+            IndicadorPasos(
+              pasos: [for (final paso in _pasos) paso.etiqueta],
               actual: _indicePaso,
               color: color,
               compacto: true,
             ),
           ],
           const SizedBox(height: 18),
-          cuerpoMovil,
+          cuerpo,
           if (_errorGuardar != null) ...[
             const SizedBox(height: 14),
-            _Aviso(_errorGuardar!, bloquea: true),
+            AvisoRegistro(_errorGuardar!, bloquea: true),
           ],
         ],
       ),
     );
 
     return Padding(
-      // Sube con el teclado para que el botón de guardar nunca quede tapado.
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
@@ -978,845 +988,30 @@ class _RegistroHojaState extends State<RegistroHoja> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Flexible(child: SingleChildScrollView(child: contenido)),
-          _pie(color, entro, compacto: true),
+          _pie(color, compacto: true),
         ],
       ),
     );
   }
 
-  /// El pie: volver o cancelar a la izquierda; seguir, o elegir qué imprimir
-  /// y guardar, a la derecha.
-  Widget _pie(Color color, bool entro, {bool compacto = false}) {
-    final bloqueado = _bloqueaBancarizacion || _bloqueaCajaCerrada;
-    final hayError = _errorGuardar != null || bloqueado;
-
-    final siguiente = _ultimoPaso
-        ? FilledButton.icon(
-            onPressed: _guardando || bloqueado ? null : _guardar,
-            style: FilledButton.styleFrom(
-              backgroundColor: color,
-              minimumSize: const Size(0, 52),
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-            ),
-            icon: _guardando
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : Icon(
-                    _vaAImprimir ? Icons.print_rounded : Icons.check_rounded,
-                    size: 20,
-                  ),
-            label: Text(
-              _vaAImprimir
-                  ? 'Guardar e imprimir'
-                  : entro
-                  ? 'Guardar entrada'
-                  : 'Guardar salida',
-            ),
-          )
-        : FilledButton.icon(
-            onPressed: bloqueado ? null : _continuar,
-            style: FilledButton.styleFrom(
-              backgroundColor: color,
-              minimumSize: const Size(0, 52),
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-            ),
-            icon: const Icon(Icons.arrow_forward_rounded, size: 20),
-            label: const Text('Continuar'),
-          );
-
-    final atras = OutlinedButton(
-      onPressed: _indicePaso == 0 ? () => Navigator.of(context).pop() : _atras,
-      style: OutlinedButton.styleFrom(
-        minimumSize: const Size(0, 52),
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-      ),
-      child: Text(_indicePaso == 0 ? 'Cancelar' : 'Atrás'),
-    );
-
-    // Qué imprimir al guardar: sólo en el último paso, y sólo lo que aplica.
-    final imprimir = _ultimoPaso && (_conRecibo || _emiteBoleta)
-        ? Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              const Padding(
-                padding: EdgeInsets.only(right: 2),
-                child: Icon(
-                  Icons.print_outlined,
-                  size: 17,
-                  color: Tokens.texto2,
-                ),
-              ),
-              if (_conRecibo)
-                FilterChip(
-                  label: const Text('Recibo'),
-                  selected: _imprimirRecibo,
-                  onSelected: (v) => setState(() => _imprimirRecibo = v),
-                ),
-              if (_emiteBoleta)
-                FilterChip(
-                  label: const Text('Boleta'),
-                  selected: _imprimirBoleta,
-                  onSelected: (v) => setState(() => _imprimirBoleta = v),
-                ),
-            ],
-          )
-        : null;
-
-    final mensaje = _errorGuardar == null && _bloqueaCajaCerrada
-        ? Row(
-            children: [
-              const Icon(Icons.lock_rounded, size: 17, color: Tokens.salio),
-              const SizedBox(width: 7),
-              const Flexible(
-                child: Text(
-                  'Abre la caja para registrar en efectivo',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: Tokens.salio,
-                  ),
-                ),
-              ),
-              if (widget.onAbrirCaja != null) ...[
-                const SizedBox(width: 6),
-                TextButton.icon(
-                  onPressed: _irAAbrirCaja,
-                  style: TextButton.styleFrom(
-                    foregroundColor: Tokens.salio,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                  ),
-                  icon: const Icon(Icons.lock_open_rounded, size: 17),
-                  label: const Text('Abrir la caja'),
-                ),
-              ],
-            ],
-          )
-        : hayError
-        ? Row(
-            children: [
-              const Icon(
-                Icons.error_outline_rounded,
-                size: 17,
-                color: Tokens.salio,
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  _errorGuardar ?? 'Cambia el medio de pago para guardar',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: Tokens.salio,
-                  ),
-                ),
-              ),
-            ],
-          )
-        : imprimir ?? const SizedBox.shrink();
-
-    return Container(
-      padding: EdgeInsets.fromLTRB(
-        compacto ? 16 : 28,
-        12,
-        compacto ? 16 : 28,
-        compacto ? 16 : 18,
-      ),
-      decoration: const BoxDecoration(
-        color: Tokens.fondo,
-        border: Border(top: BorderSide(color: Tokens.borde)),
-      ),
-      child: compacto
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (hayError || imprimir != null) ...[
-                  mensaje,
-                  const SizedBox(height: 10),
-                ],
-                Row(
-                  children: [
-                    atras,
-                    const SizedBox(width: 10),
-                    Expanded(child: siguiente),
-                  ],
-                ),
-              ],
-            )
-          : Row(
-              children: [
-                Expanded(child: mensaje),
-                const SizedBox(width: 12),
-                atras,
-                const SizedBox(width: 10),
-                siguiente,
-              ],
-            ),
-    );
-  }
-}
-
-/// Los pasos arriba del formulario: dónde se está y cuántos faltan.
-class _IndicadorPasos extends StatelessWidget {
-  const _IndicadorPasos({
-    required this.pasos,
-    required this.actual,
-    required this.color,
-    this.compacto = false,
-  });
-
-  final List<String> pasos;
-  final int actual;
-  final Color color;
-  final bool compacto;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: compacto
-          ? EdgeInsets.zero
-          : const EdgeInsets.fromLTRB(28, 12, 28, 12),
-      decoration: compacto
-          ? null
-          : const BoxDecoration(
-              border: Border(bottom: BorderSide(color: Tokens.borde)),
-            ),
-      child: Row(
-        children: [
-          for (var i = 0; i < pasos.length; i++) ...[
-            if (i > 0)
-              Expanded(
-                child: Container(
-                  height: 2,
-                  margin: const EdgeInsets.symmetric(horizontal: 10),
-                  color: i <= actual ? color : Tokens.borde,
-                ),
-              ),
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 24,
-              height: 24,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: i <= actual ? color : Tokens.superficie,
-                border: Border.all(color: i <= actual ? color : Tokens.borde),
-              ),
-              child: i < actual
-                  ? const Icon(
-                      Icons.check_rounded,
-                      size: 15,
-                      color: Colors.white,
-                    )
-                  : Text(
-                      '${i + 1}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: i <= actual ? Colors.white : Tokens.texto2,
-                      ),
-                    ),
-            ),
-            if (!compacto || i == actual) ...[
-              const SizedBox(width: 8),
-              Text(
-                pasos[i],
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: i == actual ? FontWeight.w700 : FontWeight.w500,
-                  color: i == actual ? Tokens.texto : Tokens.texto2,
-                ),
-              ),
-            ],
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-/// Los comprobantes del movimiento, al pie de la columna derecha: el recibo
-/// para firmar, el aviso del paso del efectivo y la boleta, que se genera
-/// sola.
-class _Comprobantes extends StatelessWidget {
-  const _Comprobantes({
-    required this.tipo,
-    required this.conRecibo,
-    required this.onRecibo,
-    required this.enEfectivo,
-    required this.emiteBoleta,
-    required this.exigeCliente,
-  });
-
-  final Tipo tipo;
-  final bool conRecibo;
-  final ValueChanged<bool> onRecibo;
-  final bool enEfectivo;
-  final bool emiteBoleta;
-  final bool exigeCliente;
-
-  @override
-  Widget build(BuildContext context) {
-    final entro = tipo == Tipo.entro;
-
-    Widget interruptor({
-      required IconData icono,
-      required String titulo,
-      required String bajada,
-      required bool valor,
-      required ValueChanged<bool> onCambiar,
-    }) => Material(
-      color: valor ? Tokens.marcaSuave : Tokens.superficie,
-      borderRadius: BorderRadius.circular(Tokens.radio),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        onTap: () => onCambiar(!valor),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Tokens.radio),
-            border: Border.all(
-              color: valor
-                  ? Tokens.marca.withValues(alpha: 0.45)
-                  : Tokens.borde,
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                icono,
-                size: 19,
-                color: valor ? Tokens.marca : Tokens.texto2,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      titulo,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Tokens.texto,
-                      ),
-                    ),
-                    Text(
-                      bajada,
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        color: Tokens.texto2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: valor,
-                onChanged: onCambiar,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    Widget nota(IconData icono, String texto) => Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      decoration: BoxDecoration(
-        color: Tokens.fondo,
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        border: Border.all(color: Tokens.borde),
-      ),
-      child: Row(
-        children: [
-          Icon(icono, size: 19, color: Tokens.texto2),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              texto,
-              style: const TextStyle(fontSize: 12, color: Tokens.texto2),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _Etiqueta('Comprobantes'),
-        interruptor(
-          icono: Icons.receipt_long_rounded,
-          titulo: 'Recibo interno',
-          bajada: 'Se imprime para que lo firmen',
-          valor: conRecibo,
-          onCambiar: onRecibo,
-        ),
-        if (enEfectivo) ...[
-          const SizedBox(height: 8),
-          nota(
-            Icons.payments_outlined,
-            entro
-                ? 'Efectivo: en el paso siguiente anotas con cuánto pagó y '
-                      'el vuelto.'
-                : 'Efectivo: en el paso siguiente anotas con qué billetes '
-                      'pagaste y si te dieron vuelto.',
-          ),
-        ],
-        if (emiteBoleta) ...[
-          const SizedBox(height: 8),
-          nota(
-            Icons.shopping_bag_outlined,
-            exigeCliente
-                ? 'Boleta de venta: se genera sola. Desde S/ 700 lleva nombre '
-                      'y DNI o RUC del cliente.'
-                : 'Boleta de venta: se genera sola al guardar.',
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-/// La cabeza del formulario: de qué se trata, en el color de lo que se anota.
-///
-/// En el diálogo es una franja teñida que ocupa todo el ancho, con una frase
-/// que dice qué cabe acá; en el celular, una fila simple bajo la manija.
-class _Cabecera extends StatelessWidget {
-  const _Cabecera({
-    required this.entro,
-    required this.color,
-    required this.enDialogo,
-    required this.onCerrar,
-  });
-
-  final bool entro;
-  final Color color;
-  final bool enDialogo;
-  final VoidCallback onCerrar;
-
-  @override
-  Widget build(BuildContext context) {
-    final icono = Container(
-      width: enDialogo ? 46 : 38,
-      height: enDialogo ? 46 : 38,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: enDialogo ? color : color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(enDialogo ? 14 : 11),
-      ),
-      child: Icon(
-        entro ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
-        color: enDialogo ? Colors.white : color,
-        size: enDialogo ? 24 : 20,
-      ),
-    );
-
-    final titulo = Text(
-      entro ? 'Entró plata' : 'Salió plata',
-      style: TextStyle(
-        fontSize: enDialogo ? 21 : 19,
-        fontWeight: FontWeight.w800,
-        letterSpacing: -0.3,
-        color: Tokens.texto,
-      ),
-    );
-
-    if (!enDialogo) {
-      return Row(
-        children: [
-          icono,
-          const SizedBox(width: 12),
-          Expanded(child: titulo),
-        ],
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(28, 22, 18, 20),
-      decoration: BoxDecoration(
-        color: entro ? Tokens.entroSuave : Tokens.salioSuave,
-        border: Border(
-          bottom: BorderSide(color: color.withValues(alpha: 0.18)),
-        ),
-      ),
-      child: Row(
-        children: [
-          icono,
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                titulo,
-                const SizedBox(height: 2),
-                Text(
-                  entro
-                      ? 'Una venta, un cobro o cualquier plata que llegó'
-                      : 'Una compra, un pago o cualquier plata que se fue',
-                  style: const TextStyle(fontSize: 13, color: Tokens.texto2),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: 'Cerrar',
-            icon: const Icon(Icons.close_rounded, size: 22),
-            onPressed: onCerrar,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Las categorías como fichas.
-///
-/// En una entrada son cuatro y nada más: Ventas, Cobros de fiado, Adelanto de
-/// cliente y Otros —que abre el plan contable—. En una salida van las de todos
-/// los días, las que agregó el usuario, el menú "Otra" con el resto agrupado,
-/// y el "+" para agregar una nueva.
-class _Categorias extends StatelessWidget {
-  const _Categorias({
-    required this.tipo,
-    required this.elegida,
-    required this.onElegir,
-    this.onAgregar,
-  });
-
-  final Tipo tipo;
-  final String? elegida;
-  final ValueChanged<Categoria> onElegir;
-
-  /// El "+". Null donde no se ofrece.
-  final VoidCallback? onAgregar;
-
-  @override
-  Widget build(BuildContext context) {
-    // Se lee del estado para redibujar cuando se agrega una categoría.
-    context.watch<EstadoCaja>();
-
-    final visibles = [
-      ...Categoria.comunesDe(tipo),
-      ...Categoria.propiasDe(tipo),
-    ];
-    final resto = Categoria.restoDe(tipo);
-
-    // Si la elegida no está a la vista, se agrega a las fichas para que se
-    // vea seleccionada en vez de quedar escondida dentro del menú.
-    final extra = elegida != null && !visibles.any((c) => c.id == elegida)
-        ? Categoria.porId(elegida!)
-        : null;
-
-    final grupos = <GrupoCategoria, List<Categoria>>{};
-    for (final c in resto) {
-      grupos.putIfAbsent(c.grupo, () => []).add(c);
-    }
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final c in [...visibles, ?extra])
-          ChoiceChip(
-            label: Text(c.etiqueta),
-            selected: elegida == c.id,
-            onSelected: (_) => onElegir(c),
-          ),
-        if (grupos.isNotEmpty)
-          MenuAnchor(
-            alignmentOffset: const Offset(0, 6),
-            menuChildren: [
-              for (final grupo in grupos.keys)
-                SubmenuButton(
-                  menuChildren: [
-                    for (final c in grupos[grupo]!)
-                      MenuItemButton(
-                        onPressed: () => onElegir(c),
-                        child: Text(c.etiqueta),
-                      ),
-                  ],
-                  child: Text(grupo.etiqueta),
-                ),
-            ],
-            builder: (context, menu, _) => ActionChip(
-              avatar: const Icon(Icons.more_horiz_rounded, size: 18),
-              label: const Text('Otra'),
-              onPressed: () => menu.isOpen ? menu.close() : menu.open(),
-            ),
-          ),
-        if (onAgregar != null)
-          Tooltip(
-            message: 'Agregar una categoría nueva',
-            child: ActionChip(
-              label: const Icon(
-                Icons.add_rounded,
-                size: 18,
-                color: Tokens.marca,
-              ),
-              labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-              side: BorderSide(
-                color: Tokens.marca.withValues(alpha: 0.55),
-                style: BorderStyle.solid,
-              ),
-              backgroundColor: Tokens.marcaSuave,
-              onPressed: onAgregar,
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// Los medios de pago, todos a la vista: son seis y cubren todo lo que usa
-/// un negocio. Antes había un menú "Otro" con tarjeta de crédito, cheque y
-/// "otro medio"; escondía justo uno que sí se usa.
-class _Medios extends StatelessWidget {
-  const _Medios({required this.elegido, required this.onElegir});
-
-  final MedioPago elegido;
-  final ValueChanged<MedioPago> onElegir;
-
-  @override
-  Widget build(BuildContext context) {
-    // Un medio que ya no se ofrece (cheque, "otro") sólo aparece si es el que
-    // viene recordado, para que no quede elegido algo invisible.
-    final extra = MedioPago.disponibles.contains(elegido) ? null : elegido;
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final m in [...MedioPago.disponibles, ?extra])
-          ChoiceChip(
-            label: Text(m.etiqueta),
-            selected: elegido == m,
-            onSelected: (_) => onElegir(m),
-          ),
-      ],
-    );
-  }
-}
-
-/// El desglose del IGV bajo el monto.
-///
-/// Muestra lo que ya está adentro del número escrito, no pide nada nuevo: el
-/// total es lo que de verdad se movió y el impuesto se lee hacia adentro. El
-/// interruptor existe porque no toda compra viene con factura.
-class _Igv extends StatelessWidget {
-  const _Igv({
-    required this.activo,
-    required this.centavos,
-    required this.onCambiar,
-  });
-
-  final bool activo;
-  final int? centavos;
-  final ValueChanged<bool> onCambiar;
-
-  @override
-  Widget build(BuildContext context) {
-    final total = centavos;
-    final desglose = (activo && total != null) ? Igv.desagregar(total) : null;
-
-    // El Material va afuera y el borde adentro: así la onda del toque se pinta
-    // sobre el fondo en vez de quedar tapada por él.
-    return Material(
-      color: activo ? Tokens.entroSuave : Tokens.fondo,
-      borderRadius: BorderRadius.circular(Tokens.radio),
-      child: InkWell(
-        onTap: () => onCambiar(!activo),
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Tokens.radio),
-            border: Border.all(
-              color: activo
-                  ? Tokens.entro.withValues(alpha: 0.25)
-                  : Tokens.borde,
-            ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      activo ? 'El monto incluye IGV' : 'Sin IGV',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Tokens.texto,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      desglose == null
-                          ? 'Se anota el total, sin separar impuesto'
-                          : 'Valor de venta '
-                                '${Formato.soles(desglose.base / 100)}'
-                                '  ·  IGV ${Formato.soles(desglose.igv / 100)}',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Tokens.texto2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: activo,
-                onChanged: onCambiar,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// La sección plegada con los datos que piden los formatos oficiales.
-class _MasDatos extends StatelessWidget {
-  const _MasDatos({
-    required this.abierto,
-    required this.onCambiar,
-    required this.children,
-  });
-
-  final bool abierto;
-  final ValueChanged<bool> onCambiar;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        TextButton.icon(
-          onPressed: () => onCambiar(!abierto),
-          style: TextButton.styleFrom(
-            foregroundColor: Tokens.texto2,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            minimumSize: const Size(0, 40),
-            textStyle: const TextStyle(
-              fontFamily: Tokens.tipografia,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          icon: AnimatedRotation(
-            turns: abierto ? 0.5 : 0,
-            duration: const Duration(milliseconds: 180),
-            child: const Icon(Icons.expand_more_rounded, size: 18),
-          ),
-          label: const Text('Datos para el comprobante'),
-        ),
-        AnimatedSize(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOutCubic,
-          alignment: Alignment.topCenter,
-          child: abierto
-              ? Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: children,
-                  ),
-                )
-              : const SizedBox(width: double.infinity),
-        ),
-      ],
-    );
-  }
-}
-
-class _Etiqueta extends StatelessWidget {
-  const _Etiqueta(this.texto);
-
-  final String texto;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(
-        texto,
-        style: const TextStyle(fontSize: 13, color: Tokens.texto2),
-      ),
-    );
-  }
-}
-
-class _Aviso extends StatelessWidget {
-  const _Aviso(this.texto, {this.bloquea = false});
-
-  final String texto;
-
-  /// En rojo: no es un consejo, es lo que impide guardar.
-  final bool bloquea;
-
-  @override
-  Widget build(BuildContext context) {
-    final fondo = bloquea ? Tokens.salioSuave : const Color(0xFFFFF6E5);
-    final borde = bloquea
-        ? Tokens.salio.withValues(alpha: 0.35)
-        : const Color(0xFFF0DCB4);
-    final color = bloquea ? Tokens.salio : const Color(0xFF6B520F);
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: fondo,
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        border: Border.all(color: borde),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            bloquea ? Icons.block_rounded : Icons.info_outline,
-            size: 18,
-            color: color,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              texto,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: bloquea ? FontWeight.w600 : FontWeight.w400,
-                color: color,
-              ),
-            ),
-          ),
-        ],
-      ),
+  /// Pie de acciones consistente en celular y escritorio.
+  /// En el último paso permite guardar o guardar e imprimir.
+  Widget _pie(Color color, {bool compacto = false}) {
+    return PieRegistro(
+      color: color,
+      ultimoPaso: _ultimoPaso,
+      hayBoleta: _emiteBoleta,
+      hayRecibo: _conRecibo,
+      guardando: _guardando,
+      bloqueaBancarizacion: _bloqueaBancarizacion,
+      bloqueaCajaCerrada: _bloqueaCajaCerrada,
+      errorGuardar: _errorGuardar,
+      compacto: compacto,
+      onAtras: _indicePaso == 0 ? () => Navigator.of(context).pop() : _atras,
+      onContinuar: _continuar,
+      onGuardar: () => _guardar(),
+      onGuardarEImprimir: (que) => _guardar(imprimir: que),
+      onAbrirCaja: widget.onAbrirCaja == null ? null : _irAAbrirCaja,
     );
   }
 }

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -63,12 +62,7 @@ LibroOficial armar(
 void main() {
   setUpAll(() {
     // El catálogo real, el mismo que se empaqueta con la app.
-    final crudo = File('assets/pcge.json').readAsStringSync();
-    Pcge.cargarDePrueba(
-      (jsonDecode(crudo) as Map<String, dynamic>).map(
-        (k, v) => MapEntry(k, v as String),
-      ),
-    );
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   group('Monto en letras', () {

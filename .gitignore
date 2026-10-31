@@ -55,3 +55,6 @@ app.*.map.json
 # Los instalables ya compilados. Pesan cientos de megas y salen de
 # `flutter build`, así que no tienen por qué viajar con el código.
 /entregables/
+
+# Lo que deja el compilador de Kotlin al armar el APK.
+/android/.kotlin/

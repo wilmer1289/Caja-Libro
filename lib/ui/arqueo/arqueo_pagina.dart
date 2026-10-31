@@ -9,7 +9,6 @@ import '../../datos/export/impresion.dart';
 import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/fondo.dart';
-import '../../dominio/importe.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/recibo.dart';
@@ -158,9 +157,7 @@ class _AbrirCaja extends StatefulWidget {
 
 class _AbrirCajaState extends State<_AbrirCaja> {
   late _Arranque _arranque;
-  final _monto = TextEditingController();
   late final TextEditingController _responsable;
-  bool _contar = false;
   Conteo _conteo = Conteo.vacio;
   bool _intento = false;
   bool _abriendo = false;
@@ -172,7 +169,7 @@ class _AbrirCajaState extends State<_AbrirCaja> {
     final estado = context.read<EstadoCaja>();
     final anterior = estado.ultimaCajaCerrada;
     // Si quedó plata en la caja, lo más común es seguir con ella; si no,
-    // hay que decir cuánto se saca de lo guardado.
+    // hay que contar lo que se saca de lo guardado.
     _arranque = (estado.efectivoNegocio?.enCaja ?? 0) > 0
         ? _Arranque.seguir
         : _Arranque.otro;
@@ -185,14 +182,9 @@ class _AbrirCajaState extends State<_AbrirCaja> {
 
   @override
   void dispose() {
-    _monto.dispose();
     _responsable.dispose();
     super.dispose();
   }
-
-  /// Lo escrito o contado, o null si no se entiende.
-  int? get _montoEscrito =>
-      _contar ? _conteo.total : Importe.leer(_monto.text.trim());
 
   Future<void> _abrir() async {
     final estado = context.read<EstadoCaja>();
@@ -220,14 +212,17 @@ class _AbrirCajaState extends State<_AbrirCaja> {
       inicio = anterior == null ? InicioCaja.primera : InicioCaja.desdeCero;
       conteo = Conteo.vacio;
     } else {
-      final escrito = _montoEscrito;
-      if (escrito == null || escrito < 0) {
-        setState(() => _error = 'Escribe con cuánto empieza. Ej. 100 o 0');
+      // "Con otro monto" siempre se cuenta billete por billete: el conteo es
+      // el monto, no un número escrito aparte que después no se puede cuadrar.
+      if (_conteo.estaVacio) {
+        setState(
+          () => _error = 'Cuenta los billetes y monedas con que empieza.',
+        );
         return;
       }
-      apertura = escrito;
+      apertura = _conteo.total;
       inicio = anterior == null ? InicioCaja.primera : InicioCaja.otroMonto;
-      conteo = _contar ? _conteo : (escrito == 0 ? Conteo.vacio : null);
+      conteo = _conteo;
     }
     if (_responsable.text.trim().isEmpty) return;
 
@@ -324,11 +319,8 @@ class _AbrirCajaState extends State<_AbrirCaja> {
                   ? Padding(
                       padding: const EdgeInsets.only(top: 18),
                       child: _MontoApertura(
-                        monto: _monto,
-                        contar: _contar,
                         conteo: _conteo,
                         disponible: total,
-                        onContar: (v) => setState(() => _contar = v),
                         onConteo: (c) => setState(() => _conteo = c),
                         onCambio: () => setState(() => _error = null),
                       ),
@@ -474,120 +466,85 @@ class _Disponible extends StatelessWidget {
 
 class _MontoApertura extends StatelessWidget {
   const _MontoApertura({
-    required this.monto,
-    required this.contar,
     required this.conteo,
     required this.disponible,
-    required this.onContar,
     required this.onConteo,
     required this.onCambio,
   });
 
-  final TextEditingController monto;
-  final bool contar;
   final Conteo conteo;
 
   /// Todo el efectivo del negocio: de ahí sale lo que se pone.
   final int disponible;
 
-  final ValueChanged<bool> onContar;
   final ValueChanged<Conteo> onConteo;
   final VoidCallback onCambio;
 
   @override
   Widget build(BuildContext context) {
-    final puesto = contar ? conteo.total : Importe.leer(monto.text.trim());
-    final queda = puesto == null ? null : disponible - puesto;
+    final queda = disponible - conteo.total;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
         const _Rotulo('¿Con cuánto empieza la caja?'),
-        if (contar)
+        Text(
+          'Cuenta los billetes y monedas que pones en la caja. Con ese '
+          'conteo, al cerrar la app te dice cuántos de cada uno debería '
+          'haber.',
+          style: const TextStyle(fontSize: 12.5, color: Tokens.texto2),
+        ),
+        const SizedBox(height: 12),
+        ConteoEditor(
+          conteo: conteo,
+          onCambiar: (c) {
+            onConteo(c);
+            onCambio();
+          },
+        ),
+        if (conteo.total > 0 || disponible > 0) ...[
+          const SizedBox(height: 10),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
             decoration: BoxDecoration(
               color: Tokens.fondo,
               borderRadius: BorderRadius.circular(Tokens.radio),
               border: Border.all(color: Tokens.borde),
             ),
-            child: Text(
-              Formato.soles(conteo.total / 100),
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w800,
-                fontFeatures: [FontFeature.tabularFigures()],
-              ),
-            ),
-          )
-        else ...[
-          TextField(
-            controller: monto,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
-            ],
-            onChanged: (_) => onCambio(),
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-            decoration: const InputDecoration(
-              prefixText: 'S/ ',
-              hintText: '0.00',
-            ),
-          ),
-          if (disponible > 0) ...[
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ActionChip(
-                avatar: const Icon(Icons.all_inclusive_rounded, size: 16),
-                label: Text('Todo · ${Formato.soles(disponible / 100)}'),
-                onPressed: () {
-                  monto.text = (disponible / 100).toStringAsFixed(2);
-                  onCambio();
-                },
-              ),
-            ),
-          ],
-        ],
-        if (queda != null) ...[
-          const SizedBox(height: 8),
-          Text(
-            queda >= 0
-                ? 'Quedan guardados ${Formato.soles(queda / 100)}.'
-                : 'Son ${Formato.soles(-queda / 100)} más de lo que tienes: '
-                      'se suman como plata que entra de afuera.',
-            style: TextStyle(
-              fontSize: 12.5,
-              fontWeight: queda >= 0 ? FontWeight.w400 : FontWeight.w600,
-              color: queda >= 0 ? Tokens.texto2 : const Color(0xFF8A6A1F),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Entra a la caja',
+                    style: TextStyle(fontSize: 12.5, color: Tokens.texto2),
+                  ),
+                ),
+                Text(
+                  Formato.soles(conteo.total / 100),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Tokens.texto,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
             ),
           ),
         ],
-        const SizedBox(height: 4),
-        // Con su propio Material: la tarjeta tiene fondo, y sin esto el
-        // efecto del toque quedaría tapado.
-        Material(
-          type: MaterialType.transparency,
-          child: SwitchListTile(
-            value: contar,
-            onChanged: onContar,
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            title: const Text(
-              'Contar billete por billete',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            subtitle: const Text(
-              'Así, al cerrar, la app te dice cuántos de cada uno debería haber',
-              style: TextStyle(fontSize: 11.5, color: Tokens.texto2),
-            ),
+        const SizedBox(height: 8),
+        Text(
+          queda >= 0
+              ? 'Quedan guardados ${Formato.soles(queda / 100)}.'
+              : 'Son ${Formato.soles(-queda / 100)} más de lo que tienes: '
+                    'se suman como plata que entra de afuera.',
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: queda >= 0 ? FontWeight.w400 : FontWeight.w600,
+            color: queda >= 0 ? Tokens.texto2 : const Color(0xFF8A6A1F),
           ),
         ),
-        if (contar) ...[
-          const SizedBox(height: 6),
-          ConteoEditor(conteo: conteo, onCambiar: onConteo),
-        ],
       ],
     );
   }
@@ -1131,6 +1088,9 @@ class _CerrarCajaState extends State<_CerrarCaja> {
 
   Future<void> _cerrar() async {
     if (_guardando) return;
+    if (_conteo.estaVacio) return;
+    final confirmado = await _confirmarCierre();
+    if (!mounted || !confirmado) return;
     setState(() {
       _guardando = true;
       _error = null;
@@ -1169,6 +1129,87 @@ class _CerrarCajaState extends State<_CerrarCaja> {
     final contexto = navegador.context;
     if (!contexto.mounted) return;
     await _CajaCerrada.abrir(contexto, cerrada);
+  }
+
+  /// Antes de cerrar se confirma el resultado del conteo. La diferencia se
+  /// muestra tal como quedará en el acta: cuadra, falta o sobra.
+  Future<bool> _confirmarCierre() async {
+    final esperado = widget.caja.esperado;
+    final diferencia = _conteo.total - esperado;
+    final (color, icono, mensaje) = diferencia == 0
+        ? (Tokens.entro, Icons.check_circle_rounded, 'La caja cuadra')
+        : diferencia < 0
+        ? (
+            Tokens.salio,
+            Icons.trending_down_rounded,
+            'Faltan ${Formato.soles(-diferencia / 100)}',
+          )
+        : (
+            Tokens.marcaOscura,
+            Icons.trending_up_rounded,
+            'Sobran ${Formato.soles(diferencia / 100)}',
+          );
+
+    final confirmado = await showDialog<bool>(
+      context: context,
+      barrierColor: Tokens.cromo.withValues(alpha: 0.40),
+      builder: (context) => AlertDialog(
+        title: const Text('¿Cerrar la caja?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(Tokens.radio),
+                border: Border.all(color: color.withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                children: [
+                  Icon(icono, color: color, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      mensaje,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: color,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Debería haber ${Formato.soles(esperado / 100)} y contaste '
+              '${Formato.soles(_conteo.total / 100)}.',
+              style: const TextStyle(fontSize: 13, color: Tokens.texto2),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Al cerrar, la caja queda bloqueada y se genera el acta.',
+              style: TextStyle(fontSize: 12.5, color: Tokens.texto2),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.lock_rounded, size: 18),
+            label: const Text('Cerrar caja'),
+          ),
+        ],
+      ),
+    );
+    return confirmado ?? false;
   }
 
   @override
@@ -1218,6 +1259,7 @@ class _CerrarCajaState extends State<_CerrarCaja> {
     final resumen = _ResumenCierre(
       caja: caja,
       contado: _conteo.total,
+      hayConteo: !_conteo.estaVacio,
       supervisor: _supervisor,
       observacion: _observacion,
       guardando: _guardando,
@@ -1310,6 +1352,7 @@ class _ResumenCierre extends StatelessWidget {
   const _ResumenCierre({
     required this.caja,
     required this.contado,
+    required this.hayConteo,
     required this.supervisor,
     required this.observacion,
     required this.guardando,
@@ -1320,6 +1363,7 @@ class _ResumenCierre extends StatelessWidget {
 
   final Jornada caja;
   final int contado;
+  final bool hayConteo;
   final TextEditingController supervisor;
   final TextEditingController observacion;
   final bool guardando;
@@ -1332,7 +1376,7 @@ class _ResumenCierre extends StatelessWidget {
     final esperado = caja.esperado;
     final diferencia = contado - esperado;
     // Mientras no se cuenta nada no hay faltante que marcar: va neutro.
-    final sinContar = contado == 0 && esperado != 0;
+    final sinContar = !hayConteo;
     final (color, icono, titulo) = sinContar
         ? (
             Tokens.texto2,
@@ -1464,7 +1508,7 @@ class _ResumenCierre extends StatelessWidget {
             ],
             const SizedBox(height: 18),
             FilledButton.icon(
-              onPressed: guardando ? null : onCerrar,
+              onPressed: guardando || !hayConteo ? null : onCerrar,
               style: FilledButton.styleFrom(minimumSize: const Size(0, 52)),
               icon: guardando
                   ? const SizedBox(

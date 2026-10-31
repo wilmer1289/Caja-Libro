@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -22,10 +21,7 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    final mapa = jsonDecode(
-      File('assets/pcge.json').readAsStringSync(),
-    ) as Map<String, dynamic>;
-    Pcge.cargarDePrueba(mapa.map((k, v) => MapEntry(k, v as String)));
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   setUp(() async {

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -42,12 +41,7 @@ void main() {
   // El catálogo de cuentas, leído del mismo archivo que se empaqueta. Lo
   // necesitan tanto las pruebas de cuentas como las del formato oficial.
   setUpAll(() {
-    final crudo = File('assets/pcge.json').readAsStringSync();
-    Pcge.cargarDePrueba(
-      (jsonDecode(crudo) as Map<String, dynamic>).map(
-        (k, v) => MapEntry(k, v as String),
-      ),
-    );
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   group('Movimiento', () {

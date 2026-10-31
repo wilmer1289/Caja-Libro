@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -45,10 +44,7 @@ void main() {
     // de los meses cargados, intl revienta antes de llegar a lo que se prueba.
     await initializeDateFormatting('es_PE');
     sqfliteFfiInit();
-    final mapa = jsonDecode(
-      File('assets/pcge.json').readAsStringSync(),
-    ) as Map<String, dynamic>;
-    Pcge.cargarDePrueba(mapa.map((k, v) => MapEntry(k, v as String)));
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   test('moneda exacta, coma y dos decimales', () {

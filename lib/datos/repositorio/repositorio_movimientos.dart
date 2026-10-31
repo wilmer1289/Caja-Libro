@@ -1,5 +1,6 @@
 import 'package:uuid/uuid.dart';
 
+import '../../dominio/banco.dart';
 import '../../dominio/boleta.dart';
 import '../../dominio/categoria.dart';
 import '../../dominio/efectivo.dart';
@@ -10,11 +11,14 @@ import '../../dominio/importe.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/negocio.dart';
+import '../../dominio/mercaderia.dart';
+import '../../dominio/reglas_mercaderia.dart';
 import '../local/categoria_dao.dart';
 import '../local/fondo_dao.dart';
 import '../local/jornada_dao.dart';
 import '../local/movimiento_dao.dart';
 import '../local/negocio_dao.dart';
+import '../local/mercaderia_dao.dart';
 import '../remoto/fuente_remota.dart';
 import '../remoto/fuente_remota_nula.dart';
 
@@ -31,12 +35,14 @@ class RepositorioMovimientos {
     CategoriaDao? categoriaDao,
     JornadaDao? jornadaDao,
     FondoDao? fondoDao,
+    MercaderiaDao? mercaderiaDao,
     FuenteRemota? remoto,
   }) : _dao = dao ?? MovimientoDao(),
        _negocioDao = negocioDao ?? NegocioDao(),
        _categoriaDao = categoriaDao ?? CategoriaDao(),
        _jornadaDao = jornadaDao ?? JornadaDao(),
        _fondoDao = fondoDao ?? FondoDao(),
+       _mercaderiaDao = mercaderiaDao ?? MercaderiaDao(database: dao?.database),
        _remoto = remoto ?? const FuenteRemotaNula();
 
   final MovimientoDao _dao;
@@ -45,6 +51,68 @@ class RepositorioMovimientos {
   final JornadaDao _jornadaDao;
   final FondoDao _fondoDao;
   final FuenteRemota _remoto;
+  final MercaderiaDao _mercaderiaDao;
+
+  Future<List<Mercaderia>> leerMercaderias() => _mercaderiaDao.listar();
+  Future<Mercaderia?> mercaderiaPorId(String id) => _mercaderiaDao.porId(id);
+
+  Future<Mercaderia> agregarMercaderia(String nombre) async {
+    final limpio = ReglasMercaderia.validarNombre(nombre);
+    final nueva = Mercaderia(
+      id: _uuid.v4(),
+      nombre: limpio,
+      creadoEn: DateTime.now(),
+    );
+    try {
+      await _mercaderiaDao.insertar(nueva);
+    } catch (e) {
+      if ((await leerMercaderias()).any(
+        (m) => Mercaderia.claveDe(m.nombre) == Mercaderia.claveDe(limpio),
+      )) {
+        throw ArgumentError('Ya existe una mercadería con ese nombre.');
+      }
+      rethrow;
+    }
+    return nueva;
+  }
+
+  Future<Mercaderia?> validarDatosMercaderia({
+    required String categoriaId,
+    required String? mercaderiaId,
+    required int? costoCentavos,
+    bool permitirHeredado = false,
+  }) async {
+    ReglasMercaderia.validar(
+      categoriaId: categoriaId,
+      mercaderiaId: mercaderiaId,
+      costoCentavos: costoCentavos,
+      permitirHeredado: permitirHeredado,
+    );
+    if (mercaderiaId == null) return null;
+    final tipo = await mercaderiaPorId(mercaderiaId);
+    if (tipo == null) throw ArgumentError('La mercadería elegida no existe.');
+    return tipo;
+  }
+
+  Future<Movimiento> validarEdicionMercaderia(Movimiento movimiento) async {
+    final anteriores = await listar();
+    final heredado = anteriores.any(
+      (m) =>
+          m.id == movimiento.id &&
+          m.categoriaId == movimiento.categoriaId &&
+          m.mercaderiaId == null &&
+          m.costoCentavos == null &&
+          movimiento.mercaderiaId == null &&
+          movimiento.costoCentavos == null,
+    );
+    final tipo = await validarDatosMercaderia(
+      categoriaId: movimiento.categoriaId,
+      mercaderiaId: movimiento.mercaderiaId,
+      costoCentavos: movimiento.costoCentavos,
+      permitirHeredado: heredado,
+    );
+    return movimiento.copiarCon(mercaderiaNombre: tipo?.nombre);
+  }
 
   /// El efectivo del negocio, o null si todavía no se contó.
   Future<FondoNegocio?> leerFondo() => _fondoDao.leer();
@@ -241,12 +309,18 @@ class RepositorioMovimientos {
     String? contraparte,
     String? documentoContraparte,
     String? numeroTransaccion,
+    String? bancoTercero,
+    Vinculo vinculo = Vinculo.tercero,
+    DocumentoPago documentoPago = DocumentoPago.factura,
+    Situacion situacion = Situacion.cartera,
     String? cuentaAsociada,
     bool? conIgv,
     String? rutaFoto,
     bool conRecibo = false,
     String? tesorero,
     DetalleEfectivo? detalleEfectivo,
+    String? mercaderiaId,
+    int? costoCentavos,
   }) async {
     final ahora = DateTime.now();
     final categoria = Categoria.porId(categoriaId);
@@ -293,6 +367,12 @@ class RepositorioMovimientos {
       throw ArgumentError('La fecha es anterior a la apertura del negocio.');
     }
 
+    final mercaderia = await validarDatosMercaderia(
+      categoriaId: categoriaId,
+      mercaderiaId: mercaderiaId,
+      costoCentavos: costoCentavos,
+    );
+
     // El IGV va incluido en el monto: se desagrega hacia adentro para que el
     // saldo del libro siga siendo la plata que de verdad se movió.
     final afecto = conIgv ?? categoria.afectoIgv;
@@ -314,15 +394,31 @@ class RepositorioMovimientos {
         fecha: fecha,
         creadoEn: ahora,
         actualizadoEn: ahora,
-        cuentaAsociada: cuentaAsociada ?? categoria.cuentaAsociada,
+        // La cuenta elegida a mano manda; si no, la arma la regla del
+        // vínculo y el documento, como en el Excel.
+        cuentaAsociada:
+            cuentaAsociada ??
+            ReglasCuenta.para(
+              categoria,
+              vinculo: vinculo,
+              documento: documentoPago,
+              situacion: situacion,
+            ),
         igvCentavos: igv,
         contraparte: contraparte,
         documentoContraparte: documentoContraparte,
         numeroTransaccion: numeroTransaccion,
+        bancoTercero: bancoTercero,
+        vinculo: vinculo,
+        documentoPago: documentoPago,
+        situacion: situacion,
         numeroRecibo: recibo,
         numeroBoleta: boleta,
         tesorero: conRecibo ? tesorero?.trim() : null,
         detalleEfectivo: detalleEfectivo,
+        mercaderiaId: mercaderia?.id,
+        mercaderiaNombre: mercaderia?.nombre,
+        costoCentavos: costoCentavos,
         rutaFoto: rutaFoto,
         sync: EstadoSync.local,
       ),
@@ -332,7 +428,8 @@ class RepositorioMovimientos {
   /// Cualquier edición vuelve el registro a "pendiente de subir" y le pone
   /// hora nueva, que es lo que después define quién gana el conflicto.
   Future<Movimiento> editar(Movimiento movimiento) async {
-    final actualizado = movimiento.copiarCon(
+    final validado = await validarEdicionMercaderia(movimiento);
+    final actualizado = validado.copiarCon(
       actualizadoEn: DateTime.now(),
       sync: EstadoSync.local,
     );
@@ -355,28 +452,13 @@ class RepositorioMovimientos {
 
   /// El "Deshacer" del §5. Se apoya en que nunca hicimos DELETE de verdad.
   ///
-  /// Va con el constructor completo y no con `copiarCon` porque ese usa `??`
-  /// para cada campo, y con `??` es imposible volver `eliminadoEn` a null.
+  /// `copiarCon` distingue un null explícito de un campo omitido y conserva
+  /// boleta, recibo, billetes y los datos de mercadería.
   Future<Movimiento> restaurar(Movimiento movimiento) async {
     final ahora = DateTime.now();
-    final restaurado = Movimiento(
-      id: movimiento.id,
-      numero: movimiento.numero,
-      tipo: movimiento.tipo,
-      centavos: movimiento.centavos,
-      categoriaId: movimiento.categoriaId,
-      concepto: movimiento.concepto,
-      medio: movimiento.medio,
-      fecha: movimiento.fecha,
-      creadoEn: movimiento.creadoEn,
+    final restaurado = movimiento.copiarCon(
       actualizadoEn: ahora,
-      cuentaAsociada: movimiento.cuentaAsociada,
-      igvCentavos: movimiento.igvCentavos,
-      contraparte: movimiento.contraparte,
-      documentoContraparte: movimiento.documentoContraparte,
-      numeroTransaccion: movimiento.numeroTransaccion,
-      numeroRecibo: movimiento.numeroRecibo,
-      rutaFoto: movimiento.rutaFoto,
+      eliminadoEn: null,
       sync: EstadoSync.local,
     );
     await _dao.guardar(restaurado);

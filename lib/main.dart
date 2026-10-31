@@ -11,7 +11,6 @@ import 'datos/repositorio/repositorio_movimientos.dart';
 import 'dominio/pcge.dart';
 import 'estado/estado_caja.dart';
 import 'ui/puerta.dart';
-import 'ui/widgets/banner_demo.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,14 +58,7 @@ class MiCajaApp extends StatelessWidget {
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,
         ],
-        home: kIsWeb
-            ? const Column(
-                children: [
-                  BannerDemo(),
-                  Expanded(child: Puerta()),
-                ],
-              )
-            : const Puerta(),
+        home: const Puerta(),
       ),
     );
   }

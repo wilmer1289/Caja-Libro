@@ -36,10 +36,7 @@ void main() {
     TestWidgetsFlutterBinding.ensureInitialized();
     await initializeDateFormatting('es_PE');
     sqfliteFfiInit();
-    final mapa = jsonDecode(
-      File('assets/pcge.json').readAsStringSync(),
-    ) as Map<String, dynamic>;
-    Pcge.cargarDePrueba(mapa.map((k, v) => MapEntry(k, v as String)));
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   setUp(() async {
@@ -800,7 +797,7 @@ void main() {
         options: OpenDatabaseOptions(
           version: 4,
           onCreate: (d, _) async {
-            await d.execute(Esquema.crearMovimientos);
+            await d.execute(Esquema.crearMovimientosV6);
             await d.execute(Esquema.crearNegocio);
             await d.execute(Esquema.crearCategorias);
             await d.execute(Esquema.crearArqueos);

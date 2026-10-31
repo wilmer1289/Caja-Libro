@@ -1,7 +1,6 @@
 @Tags(['captura'])
 library;
 
-import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -17,6 +16,7 @@ import 'package:mi_caja/dominio/boleta.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
 import 'package:mi_caja/dominio/enums.dart';
 import 'package:mi_caja/dominio/jornada.dart';
+import 'package:mi_caja/dominio/libro_diario.dart';
 import 'package:mi_caja/dominio/libro_oficial.dart';
 import 'package:mi_caja/dominio/movimiento.dart';
 import 'package:mi_caja/dominio/negocio.dart';
@@ -287,12 +287,7 @@ void main() {
     TestWidgetsFlutterBinding.ensureInitialized();
     await initializeDateFormatting('es_PE');
     await cargarFuentes();
-    final crudo = File('assets/pcge.json').readAsStringSync();
-    Pcge.cargarDePrueba(
-      (jsonDecode(crudo) as Map<String, dynamic>).map(
-        (k, v) => MapEntry(k, v as String),
-      ),
-    );
+    Pcge.cargarDeTexto(File('assets/pcge.json').readAsStringSync());
   });
 
   Future<void> montar(
@@ -335,15 +330,20 @@ void main() {
   });
 
   testWidgets('asientos del libro diario', (tester) async {
-    final libro = libroDe(Cuenta.caja);
+    final libro = LibroDiario.armar(
+      negocio: negocioDePrueba,
+      movimientos: datosDePrueba(),
+      desde: DateTime(2026, 9),
+      hasta: DateTime(2026, 9, 30),
+    );
     await montar(
       tester,
       Column(
         children: [
-          for (final a in libro.asientos)
+          for (final e in libro.asientos.first.etapas)
             Padding(
               padding: const EdgeInsets.only(bottom: 14),
-              child: BloqueAsiento(asiento: a, periodo: 'septiembre de 2026'),
+              child: BloqueAsiento(numero: 1, etapa: e),
             ),
         ],
       ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/formato.dart';
 import '../../core/tema.dart';
 import '../../dominio/movimiento.dart';
 import '../../estado/estado_caja.dart';
@@ -30,6 +31,11 @@ class HistorialPagina extends StatelessWidget {
     }
 
     final filtrados = estado.historial;
+
+    // El ITF no es un renglón del libro, pero sí plata que se va: se anota
+    // acá, sobre lo que se está viendo.
+    final porBanco = filtrados.where((m) => m.enBanco && !m.eliminado);
+    final itf = porBanco.fold(0, (s, m) => s + m.itfCentavos);
 
     return LayoutBuilder(
       builder: (context, medidas) {
@@ -91,6 +97,18 @@ class HistorialPagina extends StatelessWidget {
                 ),
               ),
             ),
+            if (itf > 0)
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(margen + 4, 0, margen, 10),
+                sliver: SliverToBoxAdapter(
+                  child: _NotaItf(
+                    centavos: itf,
+                    operaciones: porBanco
+                        .where((m) => m.itfCentavos > 0)
+                        .length,
+                  ),
+                ),
+              ),
             if (filtrados.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,
@@ -151,8 +169,53 @@ class HistorialPagina extends StatelessWidget {
   }
 }
 
+/// Cuánto ITF cobró el banco por las operaciones a la vista.
+class _NotaItf extends StatelessWidget {
+  const _NotaItf({required this.centavos, required this.operaciones});
+
+  final int centavos;
+  final int operaciones;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(
+          Icons.account_balance_outlined,
+          size: 16,
+          color: Tokens.texto2,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              children: [
+                const TextSpan(text: 'ITF estimado: '),
+                TextSpan(
+                  text: Formato.soles(centavos / 100),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: Tokens.texto,
+                  ),
+                ),
+                TextSpan(
+                  text:
+                      ' en ${operaciones == 1 ? '1 operación' : '$operaciones operaciones'} '
+                      'por banco. Lo descuenta el banco: no va al libro.',
+                ),
+              ],
+            ),
+            style: const TextStyle(fontSize: 12.5, color: Tokens.texto2),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Una fila del historial. Tocarla, o tocar su "⋮", abre la miniventana con
-/// sus papeles: el recibo y la boleta, para verlos, imprimirlos o
+/// sus papeles: el recibo, la boleta y el voucher, para verlos, imprimirlos o
 /// descargarlos.
 ///
 /// Antes se podía deslizar para eliminar. Se sacó: en un libro contable un
@@ -174,7 +237,7 @@ class _FilaDeslizable extends StatelessWidget {
       resaltar: resaltar,
       onTap: () => AccionesMovimiento.abrir(context, movimiento),
       accion: IconButton(
-        tooltip: 'Recibo y boleta',
+        tooltip: 'Recibo, boleta y voucher',
         icon: const Icon(Icons.more_vert_rounded, size: 20),
         onPressed: () => AccionesMovimiento.abrir(context, movimiento),
       ),
