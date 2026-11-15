@@ -1,3 +1,4 @@
+import 'kardex.dart';
 import 'movimiento.dart';
 import 'reglas_asiento.dart';
 
@@ -59,6 +60,7 @@ class SaldoMercaderia {
     required this.nombre,
     required this.comprado,
     required this.costoVendido,
+    this.saldoAlmacen,
   });
 
   final String id;
@@ -69,10 +71,11 @@ class SaldoMercaderia {
 
   /// El costo de lo que se vendió.
   final int costoVendido;
+  final SaldoAlmacen? saldoAlmacen;
 
   /// Lo que debería quedar en el almacén. Puede ser negativo si se vendió
   /// mercadería que se compró antes de usar la app.
-  int get saldo => comprado - costoVendido;
+  int get saldo => saldoAlmacen?.costo ?? comprado - costoVendido;
 }
 
 /// El inventario por tipo de mercadería, en soles.
@@ -84,6 +87,41 @@ class InventarioMercaderias {
   const InventarioMercaderias._(this._porTipo);
 
   final Map<String, SaldoMercaderia> _porTipo;
+
+  /// Las compras y ventas conservan su significado en el panel. El saldo
+  /// incluye también apertura, mermas, ajustes y devoluciones.
+  factory InventarioMercaderias.desdeKardex(
+    Kardex kardex, {
+    Map<String, String> nombres = const {},
+  }) {
+    final tipos = <String, SaldoMercaderia>{};
+    for (final id in kardex.productos) {
+      var comprado = 0;
+      var vendido = 0;
+      for (final fila in kardex.filas(id)) {
+        switch (fila.linea.operacion) {
+          case OperacionAlmacen.compra:
+            comprado += fila.costoTotal;
+          case OperacionAlmacen.devolucionEntregada:
+            comprado -= fila.costoTotal;
+          case OperacionAlmacen.venta:
+            vendido += fila.costoTotal;
+          case OperacionAlmacen.devolucionRecibida:
+            vendido -= fila.costoTotal;
+          default:
+            break;
+        }
+      }
+      tipos[id] = SaldoMercaderia(
+        id: id,
+        nombre: nombres[id] ?? id,
+        comprado: comprado,
+        costoVendido: vendido,
+        saldoAlmacen: kardex.saldo(id),
+      );
+    }
+    return InventarioMercaderias._(tipos);
+  }
 
   /// Las compras de mercadería suman su base y las ventas restan su costo.
   /// Lo que no dice qué tipo es no entra: no hay a qué tipo sumarlo.

@@ -15,6 +15,7 @@ import '../dominio/movimiento.dart';
 import '../dominio/negocio.dart';
 import '../dominio/mercaderia.dart';
 import '../dominio/inventario.dart';
+import '../dominio/kardex.dart';
 import '../dominio/libro_diario.dart';
 import '../dominio/resumen.dart';
 
@@ -24,7 +25,11 @@ import '../dominio/resumen.dart';
 /// gráficos. Para el volumen de una bodega es más simple y más rápido que
 /// ir a SQLite en cada pantalla, y deja toda la lógica de vista en un solo sitio.
 class EstadoCaja extends ChangeNotifier {
-  EstadoCaja(this._repo);
+  EstadoCaja(this._repo, {this.leerLineasAlmacen});
+
+  /// P2 proporciona las líneas vigentes cuando esté disponible la base v9.
+  final List<LineaAlmacen> Function()? leerLineasAlmacen;
+  Kardex get kardex => Kardex.de(leerLineasAlmacen?.call() ?? const []);
 
   final RepositorioMovimientos _repo;
 
@@ -67,6 +72,20 @@ class EstadoCaja extends ChangeNotifier {
   InventarioMercaderias inventarioHasta({DateTime? fecha, String? excluirId}) {
     final corte = fecha ?? DateTime.now();
     final fin = DateTime(corte.year, corte.month, corte.day + 1);
+    final fuente = leerLineasAlmacen;
+    if (fuente != null) {
+      final lineas = fuente()
+          .where(
+            (l) =>
+                l.fecha.isBefore(fin) &&
+                (excluirId == null || l.movimientoId != excluirId),
+          )
+          .toList();
+      return InventarioMercaderias.desdeKardex(
+        Kardex.de(lineas),
+        nombres: {for (final m in mercaderias) m.id: m.nombre},
+      );
+    }
     return InventarioMercaderias.de(
       movimientosVigentes
           .where((m) => m.id != excluirId && m.fecha.isBefore(fin))
