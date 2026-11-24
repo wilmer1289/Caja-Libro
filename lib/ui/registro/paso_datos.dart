@@ -18,6 +18,7 @@ class PasoDatos extends StatelessWidget {
     required this.enDialogo,
     required this.monto,
     required this.centavos,
+    required this.mostrarIgv,
     required this.errorMonto,
     required this.categoria,
     required this.categoriaId,
@@ -56,6 +57,7 @@ class PasoDatos extends StatelessWidget {
   final bool enDialogo;
   final TextEditingController monto;
   final int? centavos;
+  final bool mostrarIgv;
   final String? errorMonto;
   final Categoria? categoria;
   final String? categoriaId;
@@ -135,7 +137,7 @@ class PasoDatos extends StatelessWidget {
           ),
           onChanged: onMontoChanged,
         ),
-        if ((categoria?.afectoIgv ?? false) && centavos != null) ...[
+        if (mostrarIgv && centavos != null) ...[
           const SizedBox(height: 10),
           LineaIgv(centavos: centavos!),
         ],

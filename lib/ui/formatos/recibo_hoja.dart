@@ -51,7 +51,7 @@ class ReciboHoja extends StatelessWidget {
   Widget build(BuildContext context) => ReciboVista(recibo: recibo);
 }
 
-/// La boleta de control interno en pantalla, igual que la impresa.
+/// La factura o la boleta de venta en pantalla, igual que la impresa.
 class BoletaVista extends StatelessWidget {
   const BoletaVista({super.key, required this.boleta});
 
@@ -67,8 +67,13 @@ class BoletaHoja {
     BuildContext context, {
     required Movimiento movimiento,
     required Negocio negocio,
+    List<ItemComprobante> items = const [],
   }) {
-    final boleta = Boleta(negocio: negocio, movimiento: movimiento);
+    final boleta = Boleta(
+      negocio: negocio,
+      movimiento: movimiento,
+      items: items,
+    );
     return DocumentoDialogo.abrir(
       context,
       hoja: Documentos.boleta(boleta),

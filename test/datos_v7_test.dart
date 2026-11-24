@@ -14,6 +14,7 @@ import 'package:mi_caja/datos/repositorio/repositorio_movimientos.dart';
 import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
 import 'package:mi_caja/dominio/enums.dart';
+import 'package:mi_caja/dominio/igv.dart';
 import 'package:mi_caja/dominio/movimiento.dart';
 import 'package:mi_caja/dominio/negocio.dart';
 import 'package:mi_caja/dominio/pcge.dart';
@@ -122,7 +123,14 @@ void main() {
         ..remove('banco_tercero')
         ..remove('vinculo')
         ..remove('documento_pago')
-        ..remove('situacion');
+        ..remove('situacion')
+        ..remove('doc_tipo')
+        ..remove('doc_serie')
+        ..remove('doc_numero')
+        ..remove('exportacion')
+        ..remove('registrado_por')
+        ..remove('anulado_en')
+        ..remove('reemplazado_por');
       await db.insert('movimientos', viejo);
       await db.insert('movimientos', {
         ...viejo,
@@ -180,9 +188,17 @@ void main() {
           'vinculo',
           'documento_pago',
           'situacion',
+          'doc_tipo',
+          'doc_serie',
+          'doc_numero',
+          'registrado_por',
+          'anulado_en',
+          'reemplazado_por',
         ]) {
           expect(fila.remove(campo), isNull);
         }
+        // La v9 marca todo lo de antes como venta local, no exportación.
+        expect(fila.remove('exportacion'), 0);
         expect(
           fila,
           i == 0
@@ -279,11 +295,67 @@ void main() {
         expect(await repo.listar(), isEmpty);
       });
 
+      // Lo que se registró antes del inventario (v7 y v8): ventas y compras
+      // con el tipo de mercadería y sin productos. Desde que el registro
+      // exige productos ya no se puede anotar así, pero esos datos siguen en
+      // las bases de los usuarios: se guardan tal cual, como si ya estaban.
+      var anteriores = 0;
+      Future<Movimiento> anterior({
+        String categoria = 'ventas',
+        String? mercaderia,
+        int? costo,
+        int total = 11800,
+        bool conIgv = true,
+      }) async {
+        anteriores++;
+        final ahora = DateTime.now();
+        final cat = Categoria.porId(categoria);
+        final venta = categoria == 'ventas';
+        final m = Movimiento(
+          id: 'anterior-$anteriores',
+          numero: anteriores,
+          tipo: cat.tipo,
+          centavos: total,
+          categoriaId: categoria,
+          concepto: '',
+          medio: MedioPago.yape,
+          fecha: ahora,
+          creadoEn: ahora,
+          actualizadoEn: ahora,
+          cuentaAsociada: cat.cuentaAsociada,
+          igvCentavos: conIgv && cat.afectoIgv ? Igv.desagregar(total).igv : 0,
+          numeroRecibo: anteriores,
+          numeroBoleta: venta ? anteriores : null,
+          tesorero: 'Ana',
+          mercaderiaId: mercaderia,
+          mercaderiaNombre: mercaderia == null
+              ? null
+              : (await repo.mercaderiaPorId(mercaderia))!.nombre,
+          costoCentavos: costo,
+          sync: EstadoSync.local,
+        );
+        await repo.guardarCambio(m);
+        return m;
+      }
+
+      test('desde P4 ya no se registran ventas ni compras sin productos', () async {
+        final tela = await repo.agregarMercaderia('Tela');
+        await expectLater(
+          registrar(mercaderia: tela.id, costo: 5000),
+          throwsArgumentError,
+        );
+        await expectLater(
+          registrar(categoria: 'mercaderia', mercaderia: tela.id),
+          throwsArgumentError,
+        );
+        expect(await repo.listar(), isEmpty);
+      });
+
       test(
         'datos y comprobantes sobreviven edición, borrado y deshacer',
         () async {
           final tela = await repo.agregarMercaderia('Tela');
-          final venta = await registrar(mercaderia: tela.id, costo: 5000);
+          final venta = await anterior(mercaderia: tela.id, costo: 5000);
           expect(venta.descripcionFormato, 'Venta de Tela');
           final editado = await repo.editar(
             venta.copiarCon(concepto: 'Venta especial'),
@@ -311,23 +383,23 @@ void main() {
         () async {
           final tela = await repo.agregarMercaderia('Tela');
           final pintura = await repo.agregarMercaderia('Pintura');
-          final compra = await registrar(
+          final compra = await anterior(
             categoria: 'mercaderia',
             mercaderia: tela.id,
           );
-          await registrar(
+          await anterior(
             categoria: 'mercaderia',
             mercaderia: pintura.id,
             conIgv: false,
             total: 5000,
           );
-          final venta = await registrar(
+          final venta = await anterior(
             mercaderia: tela.id,
             costo: 4000,
             total: 5900,
           );
-          final servicio = await registrar(costo: 0, total: 2360);
-          final antiguo = await registrar(total: 1180);
+          final servicio = await anterior(costo: 0, total: 2360);
+          final antiguo = await anterior(total: 1180);
           final estado = EstadoCaja(repo);
           await estado.cargar();
           expect(estado.error, isNull);

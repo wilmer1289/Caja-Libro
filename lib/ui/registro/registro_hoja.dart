@@ -8,6 +8,7 @@ import '../../datos/export/impresion.dart';
 import '../../datos/local/evidencias.dart';
 import '../../datos/local/selector_voucher.dart';
 import '../../datos/ocr/lector_voucher.dart';
+import '../../dominio/almacen.dart';
 import '../../dominio/banco.dart';
 import '../../dominio/boleta.dart';
 import '../../dominio/categoria.dart';
@@ -15,16 +16,21 @@ import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/igv.dart';
 import '../../dominio/importe.dart';
+import '../../dominio/kardex.dart';
 import '../../dominio/lectura_voucher.dart';
+import '../../dominio/mercaderia.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/pcge.dart';
 import '../../dominio/recibo.dart';
+import '../../dominio/reglas_mercaderia.dart';
+import '../../dominio/tablas_sunat.dart';
 import '../../estado/estado_caja.dart';
 import 'nueva_categoria.dart';
 import 'paso_comprobante.dart';
 import 'paso_datos.dart';
 import 'paso_efectivo.dart';
-import 'paso_mercaderia.dart';
+import 'linea_producto.dart';
+import 'paso_productos.dart';
 import 'paso_voucher.dart';
 import 'pie_registro.dart';
 import 'registro_componentes.dart';
@@ -43,6 +49,10 @@ class RegistroHoja extends StatefulWidget {
     required this.tipo,
     this.enDialogo = false,
     this.onAbrirCaja,
+    this.original,
+    this.lineasOriginales = const [],
+    this.lineasIniciales = const [],
+    this.categoriaInicialId,
   });
 
   final Tipo tipo;
@@ -56,12 +66,29 @@ class RegistroHoja extends StatefulWidget {
   /// 1920px ocupa todo el ancho para pedir cuatro datos.
   final bool enDialogo;
 
+  /// Si se corrige un error, el formulario parte de este movimiento y lo
+  /// reemplaza sin borrar el original.
+  final Movimiento? original;
+  final List<LineaAlmacen> lineasOriginales;
+
+  /// Líneas ya preparadas por un pedido del almacenero. Conservan la unidad
+  /// de compra cuando corresponda.
+  final List<LineaNueva> lineasIniciales;
+
+  /// Categoría sugerida al abrir el registro desde una acción contextual,
+  /// como «Registrar compra» dentro del inventario.
+  final String? categoriaInicialId;
+
   /// Devuelve el movimiento guardado, con sus números, o null si se cerró sin
   /// guardar.
   static Future<Movimiento?> abrir(
     BuildContext context,
     Tipo tipo, {
     VoidCallback? onAbrirCaja,
+    Movimiento? original,
+    List<LineaAlmacen> lineasOriginales = const [],
+    List<LineaNueva> lineasIniciales = const [],
+    String? categoriaInicialId,
   }) {
     final esEscritorio = MediaQuery.sizeOf(context).width >= 900;
 
@@ -78,7 +105,14 @@ class RegistroHoja extends StatefulWidget {
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * 0.94,
           ),
-          child: RegistroHoja(tipo: tipo, onAbrirCaja: onAbrirCaja),
+          child: RegistroHoja(
+            tipo: tipo,
+            onAbrirCaja: onAbrirCaja,
+            original: original,
+            lineasOriginales: lineasOriginales,
+            lineasIniciales: lineasIniciales,
+            categoriaInicialId: categoriaInicialId,
+          ),
         ),
       );
     }
@@ -110,6 +144,10 @@ class RegistroHoja extends StatefulWidget {
                   tipo: tipo,
                   enDialogo: true,
                   onAbrirCaja: onAbrirCaja,
+                  original: original,
+                  lineasOriginales: lineasOriginales,
+                  lineasIniciales: lineasIniciales,
+                  categoriaInicialId: categoriaInicialId,
                 ),
               ),
             ),
@@ -144,7 +182,7 @@ class RegistroHoja extends StatefulWidget {
 /// de caja; por banco, el voucher, porque de eso vive el Libro Bancos.
 enum _Paso {
   datos('Datos'),
-  mercaderia('Mercadería'),
+  productos('Productos'),
   voucher('Voucher'),
   pago('Pago en efectivo'),
   comprobante('Comprobante');
@@ -156,33 +194,50 @@ enum _Paso {
 class _RegistroHojaState extends State<RegistroHoja> {
   final _monto = TextEditingController();
   final _concepto = TextEditingController();
-  final _costoMercaderia = TextEditingController();
-  String? _mercaderiaId;
+  final _serieComprobanteProveedor = TextEditingController();
+  final _numeroComprobanteProveedor = TextEditingController();
+  final List<LineaProductoBorrador> _lineas = [];
+  bool _sinIgvCompra = false;
+  bool _ventaExportacion = false;
   bool _ventaEsServicio = false;
+  String _tipoComprobanteProveedor = TablasSunat.factura;
+  String? _errorProductos;
+  String? _errorComprobanteProveedor;
+  bool _intentoProductos = false;
+  String? _rutaVoucherOriginal;
 
   bool get _compraMercaderia => _categoriaId == 'mercaderia';
   bool get _venta => _categoriaId == 'ventas';
-  bool get _pideMercaderia => _compraMercaderia || _venta;
+  bool get _pideProductos => _compraMercaderia || _venta;
+  bool get _conIgv =>
+      _afectoIgv &&
+      !(_compraMercaderia && _sinIgvCompra) &&
+      !(_venta && _ventaExportacion);
 
-  String? get _errorMercaderia {
-    if (!_intentoMercaderia || !_pideMercaderia || _mercaderiaId != null) {
-      return null;
-    }
-    if (_venta && _ventaEsServicio) return null;
-    return 'Elige o crea un tipo de mercadería';
+  int get _baseParaLineas {
+    final monto = _centavos ?? 0;
+    return _conIgv ? Igv.desagregar(monto).base : monto;
   }
 
-  String? get _errorCostoMercaderia {
-    if (!_intentoMercaderia ||
-        !_venta ||
-        _ventaEsServicio ||
-        _mercaderiaId == null) {
-      return null;
+  List<LineaNueva> get _lineasNuevas {
+    final resultado = <LineaNueva>[];
+    for (final borrador in _lineas) {
+      final linea = borrador.aLinea(compra: _compraMercaderia);
+      if (linea != null) resultado.add(linea);
     }
-    final costo = Importe.leer(_costoMercaderia.text);
-    return costo == null || costo <= 0
-        ? 'Escribe un costo en soles mayor que cero'
-        : null;
+    return resultado;
+  }
+
+  int get _sumaLineas => _lineasNuevas.fold(0, (s, l) => s + l.importe);
+
+  int get _montoCalculadoLineas =>
+      ReglasMercaderia.montoParaLineas(_sumaLineas, conIgv: _conIgv);
+
+  Kardex get _kardexFormulario {
+    final lineas = context.read<EstadoCaja>().lineasAlmacen.where(
+      (l) => widget.original == null || l.movimientoId != widget.original!.id,
+    );
+    return Kardex.de(lineas.toList());
   }
 
   final _contraparte = TextEditingController();
@@ -208,9 +263,8 @@ class _RegistroHojaState extends State<RegistroHoja> {
   /// en vivo no es gritarle apenas abre la pantalla.
   bool _intentoGuardar = false;
 
-  /// El paso de mercadería valida por su cuenta: llegar a él no es haberlo
+  /// El paso Productos valida por su cuenta: llegar a él no es haberlo
   /// intentado completar.
-  bool _intentoMercaderia = false;
   bool _guardando = false;
 
   // --- Los pasos ---
@@ -256,7 +310,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
   List<_Paso> get _pasos => [
     _Paso.datos,
-    if (_pideMercaderia) _Paso.mercaderia,
+    if (_pideProductos) _Paso.productos,
     if (_enBanco) _Paso.voucher,
     if (_enEfectivo) _Paso.pago,
     if (_conRecibo) _Paso.comprobante,
@@ -273,21 +327,161 @@ class _RegistroHojaState extends State<RegistroHoja> {
   void initState() {
     super.initState();
     final estado = context.read<EstadoCaja>();
-    _fecha = DateTime.now();
-    _medio = estado.ultimoMedio;
-    _categoriaId = widget.tipo == Tipo.entro
-        ? estado.ultimaCategoriaIngreso
-        : estado.ultimaCategoriaEgreso;
-    _conRecibo = estado.reciboPorDefecto;
-    _tesorero = TextEditingController(text: estado.negocio.tesorero)
-      ..addListener(() => setState(() {}));
+    final original = widget.original;
+    _fecha = original?.fecha ?? DateTime.now();
+    _medio = original?.medio ?? estado.ultimoMedio;
+    _categoriaId =
+        original?.categoriaId ??
+        widget.categoriaInicialId ??
+        (widget.tipo == Tipo.entro
+            ? estado.ultimaCategoriaIngreso
+            : estado.ultimaCategoriaEgreso);
+    _monto.text = original == null ? '' : _dinero(original.centavos);
+    _concepto.text = original?.concepto ?? '';
+    _contraparte.text = original?.contraparte ?? '';
+    _documento.text = original?.documentoContraparte ?? '';
+    _transaccion.text = original?.numeroTransaccion ?? '';
+    _conRecibo = original == null
+        ? estado.reciboPorDefecto
+        : original.numeroRecibo != null;
+    _sinIgvCompra = original?.sinIgv ?? false;
+    _ventaExportacion = original?.exportacion ?? false;
+    _ventaEsServicio =
+        original != null &&
+        original.tipo == Tipo.entro &&
+        original.mercaderiaId == null &&
+        original.costoCentavos == 0;
+    _tipoComprobanteProveedor =
+        original?.comprobante?.tipo ?? TablasSunat.factura;
+    _serieComprobanteProveedor.text = original?.comprobante?.serie ?? '';
+    _numeroComprobanteProveedor.text = original?.comprobante?.numero ?? '';
+    _rutaVoucherOriginal = original?.rutaFoto;
+    _cuentaElegida = original?.cuentaAsociada;
+    _vinculo = original?.vinculo ?? Vinculo.tercero;
+    _documentoPago = original?.documentoPago ?? DocumentoPago.factura;
+    _situacion = original?.situacion ?? Situacion.cartera;
+    _bancoTercero = original?.bancoTercero;
+    if (original?.detalleEfectivo != null) {
+      _entregado = original!.detalleEfectivo!.entregado;
+      _vueltoManual = original.detalleEfectivo!.vuelto;
+    }
+    _tesorero = TextEditingController(
+      text: original?.tesorero ?? estado.negocio.tesorero,
+    )..addListener(() => setState(() {}));
+
+    for (final linea in widget.lineasOriginales) {
+      final producto = estado.producto(linea.mercaderiaId);
+      _lineas.add(_borradorDesdeLinea(linea, producto));
+    }
+    if (widget.original == null && widget.lineasIniciales.isNotEmpty) {
+      for (final linea in widget.lineasIniciales) {
+        final producto = estado.producto(linea.mercaderiaId);
+        final cantidad = linea.cantidad;
+        final descuento = linea.descuento;
+        final importe = linea.importe;
+        final valor = _compraMercaderia
+            ? _dinero(importe + descuento)
+            : cantidad <= 0
+            ? ''
+            : _dinero(
+                (((BigInt.from(importe + descuento) *
+                                BigInt.from(Cantidad.escala)) +
+                            BigInt.from(cantidad ~/ 2)) ~/
+                        BigInt.from(cantidad))
+                    .toInt(),
+              );
+        _lineas.add(
+          LineaProductoBorrador(
+            mercaderiaId: linea.mercaderiaId,
+            cantidad: Cantidad.texto(cantidad),
+            valor: valor,
+            descuento: _dinero(descuento),
+            enUnidadDeCompra:
+                linea.enUnidadDeCompra && producto?.tieneUnidadDeCompra == true,
+            importeOriginal: _compraMercaderia ? null : importe,
+            conservarImporte: !_compraMercaderia,
+          ),
+        );
+      }
+    }
+    // Los movimientos de la v7/v8 no guardaban cantidades. Se recupera el
+    // producto y el importe, dejando la cantidad pendiente para que se complete.
+    if (original != null &&
+        widget.lineasOriginales.isEmpty &&
+        original.mercaderiaId != null) {
+      _lineas.add(
+        LineaProductoBorrador(
+          mercaderiaId: original.mercaderiaId,
+          cantidad: '',
+          valor: original.tipo == Tipo.salio
+              ? _dinero(original.baseCentavos)
+              : '',
+        ),
+      );
+    }
+    // En una compra con una sola línea, el importe de esa línea parte del
+    // monto del formulario. También aplica a pedidos precargados y a una
+    // corrección que recupera una única línea del movimiento original.
+    if (_compraMercaderia && _lineas.length == 1) {
+      _lineas.single.autoImporte = true;
+      if (_centavos != null) {
+        _lineas.single.valor.text = _dinero(_baseParaLineas);
+      }
+    }
+  }
+
+  String _dinero(int centavos) =>
+      '${centavos ~/ 100}.${(centavos % 100).toString().padLeft(2, '0')}';
+
+  LineaProductoBorrador _borradorDesdeLinea(
+    LineaAlmacen linea,
+    Mercaderia? producto,
+  ) {
+    var cantidad = linea.cantidad;
+    var enUnidadDeCompra = false;
+    if (_compraMercaderia && producto?.tieneUnidadDeCompra == true) {
+      final factor = producto!.factorCompra!;
+      final dividendo =
+          BigInt.from(linea.cantidad) * BigInt.from(Cantidad.escala);
+      final divisor = BigInt.from(factor);
+      if (dividendo % divisor == BigInt.zero) {
+        cantidad = (dividendo ~/ divisor).toInt();
+        enUnidadDeCompra = true;
+      }
+    }
+    final importe = linea.importe ?? 0;
+    final descuento = linea.descuento;
+    final valor = _compraMercaderia
+        ? _dinero(importe + descuento)
+        : cantidad <= 0
+        ? ''
+        : _dinero(
+            (((BigInt.from(importe + descuento) *
+                            BigInt.from(Cantidad.escala)) +
+                        BigInt.from(cantidad ~/ 2)) ~/
+                    BigInt.from(cantidad))
+                .toInt(),
+          );
+    return LineaProductoBorrador(
+      mercaderiaId: linea.mercaderiaId,
+      cantidad: Cantidad.texto(cantidad),
+      valor: valor,
+      descuento: _dinero(descuento),
+      enUnidadDeCompra: enUnidadDeCompra,
+      importeOriginal: _compraMercaderia ? null : importe,
+      conservarImporte: !_compraMercaderia,
+    );
   }
 
   @override
   void dispose() {
-    _costoMercaderia.dispose();
+    for (final linea in _lineas) {
+      linea.dispose();
+    }
     _monto.dispose();
     _concepto.dispose();
+    _serieComprobanteProveedor.dispose();
+    _numeroComprobanteProveedor.dispose();
     _contraparte.dispose();
     _documento.dispose();
     _transaccion.dispose();
@@ -330,16 +524,24 @@ class _RegistroHojaState extends State<RegistroHoja> {
   String? get _errorNombre {
     if (!_intentoCliente || !_exigeCliente) return null;
     if (_contraparte.text.trim().isEmpty) {
-      return 'Desde S/ 700 la boleta lleva el nombre del cliente';
+      return 'Desde S/ 700 el comprobante lleva el nombre del cliente';
     }
     return null;
   }
 
   String? get _errorDocumento {
-    if (!_intentoCliente || !_exigeCliente) return null;
+    if (!_intentoCliente) return null;
     final doc = _documento.text.trim();
-    if (doc.isEmpty) return 'Desde S/ 700 la boleta lleva el DNI o RUC';
-    if (doc.length != 8 && doc.length != 11) {
+    if (doc.isEmpty) {
+      return _exigeCliente
+          ? 'Desde S/ 700 el comprobante lleva el DNI o RUC del cliente'
+          : null;
+    }
+    // Una exportación puede identificar al comprador con un documento
+    // extranjero. En ventas nacionales, DNI y RUC determinan el comprobante.
+    if (!_ventaExportacion &&
+        !RegExp(r'^\d{8}$').hasMatch(doc) &&
+        !RegExp(r'^\d{11}$').hasMatch(doc)) {
       return 'El DNI tiene 8 dígitos y el RUC 11';
     }
     return null;
@@ -374,7 +576,12 @@ class _RegistroHojaState extends State<RegistroHoja> {
   /// Hasta S/ 700 el voucher es opcional; desde ahí, obligatorio. Es el mismo
   /// tope desde el que la boleta pide el DNI.
   String? get _errorVoucher {
-    if (!_intentoVoucher || !_enBanco || _voucher != null) return null;
+    if (!_intentoVoucher ||
+        !_enBanco ||
+        _voucher != null ||
+        _rutaVoucherOriginal != null) {
+      return null;
+    }
     return (_centavos ?? 0) >= Movimiento.umbralVoucherCentavos
         ? 'Desde S/ 700 adjunta el voucher: es la prueba de la operación.'
         : null;
@@ -439,10 +646,19 @@ class _RegistroHojaState extends State<RegistroHoja> {
   void _elegirCategoria(Categoria c) {
     setState(() {
       _categoriaId = c.id;
-      _mercaderiaId = null;
-      _costoMercaderia.clear();
+      for (final linea in _lineas) {
+        linea.dispose();
+      }
+      _lineas.clear();
       _ventaEsServicio = false;
-      _intentoMercaderia = false;
+      _sinIgvCompra = false;
+      _ventaExportacion = false;
+      _errorProductos = null;
+      _errorComprobanteProveedor = null;
+      _intentoProductos = false;
+      _serieComprobanteProveedor.clear();
+      _numeroComprobanteProveedor.clear();
+      _tipoComprobanteProveedor = TablasSunat.factura;
       // La cuenta elegida es de "Otros": con otra categoría ya no aplica.
       if (!c.pideCuenta) _cuentaElegida = null;
       if (_exigeCliente) _masDatos = true;
@@ -470,14 +686,160 @@ class _RegistroHojaState extends State<RegistroHoja> {
         !_bloqueaCajaCerrada;
   }
 
-  /// El paso de mercadería está completo. El aviso de costo no bloquea: sólo
-  /// se exige que el costo exista cuando hay un tipo elegido en una venta.
-  bool _mercaderiaValida() {
+  String? _validarComprobanteProveedor() {
+    if (!_compraMercaderia) return null;
+    final serie = _serieComprobanteProveedor.text.trim();
+    final numero = _numeroComprobanteProveedor.text.trim();
+    if (serie.isEmpty && numero.isEmpty) return null;
+    return Comprobante(
+      tipo: _tipoComprobanteProveedor,
+      serie: serie,
+      numero: numero,
+    ).limpio.problema;
+  }
+
+  Comprobante? get _comprobanteProveedor {
+    if (!_compraMercaderia) return null;
+    final serie = _serieComprobanteProveedor.text.trim();
+    final numero = _numeroComprobanteProveedor.text.trim();
+    if (serie.isEmpty && numero.isEmpty) return null;
+    return Comprobante(
+      tipo: _tipoComprobanteProveedor,
+      serie: serie,
+      numero: numero,
+    ).limpio;
+  }
+
+  bool _productosValidos() {
     setState(() {
-      _intentoMercaderia = true;
+      _intentoProductos = true;
       _errorGuardar = null;
+      _errorProductos = null;
+      _errorComprobanteProveedor = _validarComprobanteProveedor();
     });
-    return _errorMercaderia == null && _errorCostoMercaderia == null;
+    if (!_pideProductos) return true;
+    if (_errorComprobanteProveedor != null) {
+      _errorProductos = _errorComprobanteProveedor;
+      return false;
+    }
+    if (_venta && _ventaEsServicio) {
+      return true;
+    }
+    if (_lineas.isEmpty) {
+      _errorProductos = 'Agrega al menos un producto para continuar.';
+      return false;
+    }
+    final nuevas = _lineasNuevas;
+    if (nuevas.length != _lineas.length) {
+      _errorProductos = 'Completa el producto, la cantidad, el importe o el precio de cada línea.';
+      return false;
+    }
+    final estado = context.read<EstadoCaja>();
+    try {
+      final normalizadas = ReglasMercaderia.validarLineas(
+        categoriaId: _categoriaId!,
+        lineas: nuevas,
+        baseCentavos: _sumaLineas,
+        productos: {for (final p in estado.productosActivos) p.id: p},
+      );
+      if (_centavos == null || _sumaLineas != _baseParaLineas) {
+        _errorProductos =
+            'Las líneas suman ${Formato.soles(_montoCalculadoLineas / 100)}. '
+            'Ajusta el monto con el botón "Usar ${Formato.soles(_montoCalculadoLineas / 100)} como monto".';
+        return false;
+      }
+      if (_venta) {
+        final motor = _kardexFormulario;
+        for (final linea in normalizadas) {
+          final producto = estado.producto(linea.mercaderiaId);
+          if (producto == null) {
+            _errorProductos = 'Uno de los productos ya no está disponible.';
+            return false;
+          }
+          final disponible = estado.stockDisponible(
+            linea.mercaderiaId,
+            fecha: _fecha,
+            excluirId: widget.original?.id,
+          );
+          if (linea.cantidad > disponible) {
+            _errorProductos =
+                'No hay suficiente ${producto.nombre}: hay '
+                '${Cantidad.texto(disponible)} ${producto.abreviaturaUnidad}.';
+            return false;
+          }
+          motor.costoDeSalida(linea.mercaderiaId, linea.cantidad, _fecha);
+        }
+      }
+      return true;
+    } on ArgumentError catch (e) {
+      _errorProductos = '${e.message}';
+      return false;
+    } on StateError catch (e) {
+      _errorProductos = e.message;
+      return false;
+    }
+  }
+
+  void _agregarLinea() {
+    setState(() {
+      final borrador = LineaProductoBorrador();
+      if (_compraMercaderia && _lineas.isEmpty) {
+        borrador.autoImporte = true;
+        if (_centavos != null) {
+          borrador.valor.text = _dinero(_baseParaLineas);
+        }
+      }
+      _lineas.add(borrador);
+      _errorProductos = null;
+    });
+  }
+
+  void _quitarLinea(int indice) {
+    setState(() {
+      _lineas.removeAt(indice).dispose();
+      if (_compraMercaderia && _lineas.length == 1) {
+        final unica = _lineas.single;
+        unica.autoImporte = true;
+        if (_centavos != null) {
+          unica.valor.text = _dinero(_baseParaLineas);
+        }
+      }
+      _errorProductos = null;
+    });
+  }
+
+  void _cambioLinea(int indice) {
+    setState(() => _errorProductos = null);
+  }
+
+  void _seleccionarProducto(int indice, String? id) {
+    final linea = _lineas[indice];
+    final producto = id == null
+        ? null
+        : context.read<EstadoCaja>().producto(id);
+    setState(() {
+      linea.mercaderiaId = id;
+      linea.enUnidadDeCompra =
+          _compraMercaderia && (producto?.tieneUnidadDeCompra ?? false);
+      linea.conservarImporte = false;
+      if (_venta && producto?.precioSugerido != null) {
+        linea.valor.text = _dinero(producto!.precioSugerido!);
+      } else if (_compraMercaderia && _lineas.length == 1) {
+        linea.autoImporte = true;
+        if (_centavos != null) {
+          linea.valor.text = _dinero(_baseParaLineas);
+        }
+      }
+      _errorProductos = null;
+    });
+  }
+
+  void _usarMontoCalculado() {
+    if (_montoCalculadoLineas <= 0) return;
+    setState(() {
+      _monto.text = _dinero(_montoCalculadoLineas);
+      _errorProductos = null;
+    });
   }
 
   bool _voucherValido() {
@@ -574,7 +936,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
   void _continuar() {
     if (_paso == _Paso.datos && !_datosValidos()) return;
-    if (_paso == _Paso.mercaderia && !_mercaderiaValida()) return;
+    if (_paso == _Paso.productos && !_productosValidos()) return;
     if (_paso == _Paso.voucher && !_voucherValido()) return;
     if (_paso == _Paso.pago) {
       setState(() => _intentoPago = true);
@@ -587,11 +949,40 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
   /// El movimiento tal como quedaría, sin números todavía. Es lo que muestra
   /// la vista previa del recibo.
+  int? _costoTotalVenta() {
+    if (!_venta) return null;
+    if (_ventaEsServicio) return 0;
+    if (_lineasNuevas.isEmpty) return null;
+    try {
+      return _lineasNuevas.fold<int>(
+        0,
+        (s, linea) =>
+            s +
+            _kardexFormulario.costoDeSalida(
+              linea.mercaderiaId,
+              linea.cantidad,
+              _fecha,
+            ),
+      );
+    } on StateError {
+      // El paso Productos mostrará el stock insuficiente; la vista previa no
+      // debe impedir que el usuario vea y corrija ese error.
+      return null;
+    }
+  }
+
   Movimiento _provisional() {
     final centavos = _centavos ?? 0;
     final categoria = _categoria ?? Categoria.otrosEgresos;
     final cuenta = categoria.pideCuenta ? _cuentaElegida : null;
     final ahora = DateTime.now();
+    final estado = context.read<EstadoCaja>();
+    final nombres = [
+      for (final linea in _lineasNuevas)
+        estado.producto(linea.mercaderiaId)?.nombre ?? linea.mercaderiaId,
+    ];
+    final costoVenta = _costoTotalVenta();
+    final doc = _comprobanteProveedor;
     return Movimiento(
       id: '',
       numero: 0,
@@ -604,23 +995,22 @@ class _RegistroHojaState extends State<RegistroHoja> {
       creadoEn: ahora,
       actualizadoEn: ahora,
       cuentaAsociada: cuenta,
-      igvCentavos: _afectoIgv ? Igv.desagregar(centavos).igv : 0,
+      igvCentavos: _conIgv ? Igv.desagregar(centavos).igv : 0,
       contraparte: _limpio(_contraparte),
       documentoContraparte: _limpio(_documento),
       tesorero: _tesorero.text.trim(),
       detalleEfectivo: _detalleFinal(),
-      mercaderiaId: _pideMercaderia ? _mercaderiaId : null,
-      mercaderiaNombre: _pideMercaderia
-          ? context
-                .read<EstadoCaja>()
-                .mercaderias
-                .where((m) => m.id == _mercaderiaId)
-                .firstOrNull
-                ?.nombre
+      mercaderiaId: _lineasNuevas.length == 1
+          ? _lineasNuevas.single.mercaderiaId
           : null,
-      costoCentavos: _venta
-          ? (_ventaEsServicio ? 0 : Importe.leer(_costoMercaderia.text))
+      mercaderiaNombre: _lineasNuevas.isNotEmpty
+          ? ReglasMercaderia.descripcionDe(nombres)
           : null,
+      costoCentavos: costoVenta,
+      docTipo: doc?.tipo,
+      docSerie: doc?.serie,
+      docNumero: doc?.numero,
+      exportacion: _venta && _ventaExportacion,
       sync: EstadoSync.local,
     );
   }
@@ -654,8 +1044,8 @@ class _RegistroHojaState extends State<RegistroHoja> {
       if (_indicePaso != 0) setState(() => _indicePaso = 0);
       return;
     }
-    if (!_mercaderiaValida()) {
-      final paso = _pasos.indexOf(_Paso.mercaderia);
+    if (!_productosValidos()) {
+      final paso = _pasos.indexOf(_Paso.productos);
       if (paso >= 0 && _indicePaso != paso) {
         setState(() => _indicePaso = paso);
       }
@@ -688,33 +1078,64 @@ class _RegistroHojaState extends State<RegistroHoja> {
       // El voucher se guarda primero: el movimiento lleva su nombre.
       final voucher = _enBanco ? _voucher : null;
       final rutaVoucher = voucher == null
-          ? null
+          ? (_enBanco ? _rutaVoucherOriginal : null)
           : await AlmacenEvidencias.instancia.guardar(voucher);
-      final nuevo = await estado.registrar(
-        tipo: widget.tipo,
-        centavos: _centavos!,
-        categoriaId: categoria.id,
-        concepto: _conceptoFinal(cuenta),
-        cuentaAsociada: cuenta,
-        medio: _medio,
-        fecha: _fecha,
-        contraparte: _limpio(_contraparte),
-        documentoContraparte: _limpio(_documento),
-        numeroTransaccion: _enBanco ? _limpio(_transaccion) : null,
-        bancoTercero: _enBanco ? _bancoTercero : null,
-        vinculo: _vinculoFinal,
-        documentoPago: _documentoFinal,
-        situacion: _situacionFinal,
-        rutaFoto: rutaVoucher,
-        conIgv: _afectoIgv,
-        conRecibo: _conRecibo,
-        tesorero: _tesorero.text,
-        detalleEfectivo: _detalleFinal(),
-        mercaderiaId: _pideMercaderia ? _mercaderiaId : null,
-        costoCentavos: _venta
-            ? (_ventaEsServicio ? 0 : Importe.leer(_costoMercaderia.text))
-            : null,
-      );
+      final nuevo = widget.original == null
+          ? await estado.registrar(
+              tipo: widget.tipo,
+              centavos: _centavos!,
+              categoriaId: categoria.id,
+              concepto: _conceptoFinal(cuenta),
+              cuentaAsociada: cuenta,
+              medio: _medio,
+              fecha: _fecha,
+              contraparte: _limpio(_contraparte),
+              documentoContraparte: _limpio(_documento),
+              numeroTransaccion: _enBanco ? _limpio(_transaccion) : null,
+              bancoTercero: _enBanco ? _bancoTercero : null,
+              vinculo: _vinculoFinal,
+              documentoPago: _documentoFinal,
+              situacion: _situacionFinal,
+              rutaFoto: rutaVoucher,
+              conIgv: _afectoIgv,
+              conRecibo: _conRecibo,
+              tesorero: _tesorero.text,
+              detalleEfectivo: _detalleFinal(),
+              mercaderiaId: null,
+              costoCentavos: null,
+              lineas: _lineasNuevas,
+              comprobante: _comprobanteProveedor,
+              exportacion: _venta && _ventaExportacion,
+              sinIgv: _compraMercaderia && _sinIgvCompra,
+            )
+          : await estado.corregir(
+              widget.original!,
+              tipo: widget.tipo,
+              centavos: _centavos!,
+              categoriaId: categoria.id,
+              concepto: _conceptoFinal(cuenta),
+              cuentaAsociada: cuenta,
+              medio: _medio,
+              fecha: _fecha,
+              contraparte: _limpio(_contraparte),
+              documentoContraparte: _limpio(_documento),
+              numeroTransaccion: _enBanco ? _limpio(_transaccion) : null,
+              bancoTercero: _enBanco ? _bancoTercero : null,
+              vinculo: _vinculoFinal,
+              documentoPago: _documentoFinal,
+              situacion: _situacionFinal,
+              rutaFoto: rutaVoucher,
+              conIgv: _afectoIgv,
+              conRecibo: _conRecibo,
+              tesorero: _tesorero.text,
+              detalleEfectivo: _detalleFinal(),
+              mercaderiaId: null,
+              costoCentavos: null,
+              lineas: _lineasNuevas,
+              comprobante: _comprobanteProveedor,
+              exportacion: _venta && _ventaExportacion,
+              sinIgv: _compraMercaderia && _sinIgvCompra,
+            );
       if (_conRecibo && _tesoreroFijo) {
         await estado.usarTesorero(_tesorero.text);
       }
@@ -735,7 +1156,14 @@ class _RegistroHojaState extends State<RegistroHoja> {
             );
           }
           if (_emiteBoleta && imprimeBoleta && nuevo.numeroBoleta != null) {
-            final boleta = Boleta(negocio: negocio, movimiento: nuevo);
+            final boleta = Boleta(
+              negocio: negocio,
+              movimiento: nuevo,
+              items: ItemComprobante.de(
+                estado.lineasDe(nuevo.id),
+                estado.producto,
+              ),
+            );
             await Impresion.imprimir(
               await ExportadorPdf.boleta(boleta),
               ExportadorPdf.nombreBoleta(boleta),
@@ -748,6 +1176,13 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
       if (!mounted) return;
       navegador.pop(nuevo);
+      if (widget.original != null) {
+        mensajero.showSnackBar(
+          const SnackBar(
+            content: Text('Movimiento anulado y vuelto a registrar.'),
+          ),
+        );
+      }
       if (avisoImpresion != null) {
         mensajero.showSnackBar(SnackBar(content: Text(avisoImpresion)));
       }
@@ -765,12 +1200,14 @@ class _RegistroHojaState extends State<RegistroHoja> {
     final entro = widget.tipo == Tipo.entro;
     final color = entro ? Tokens.entro : Tokens.salio;
     final centavos = _centavos;
+    final estado = context.watch<EstadoCaja>();
 
     final pasoDatos = PasoDatos(
       tipo: widget.tipo,
       enDialogo: widget.enDialogo,
       monto: _monto,
       centavos: centavos,
+      mostrarIgv: _conIgv,
       errorMonto: _errorMonto,
       categoria: _categoria,
       categoriaId: _categoriaId,
@@ -794,6 +1231,12 @@ class _RegistroHojaState extends State<RegistroHoja> {
       bloqueaCajaCerrada: _bloqueaCajaCerrada,
       onMontoChanged: (_) => setState(() {
         if (_exigeCliente) _masDatos = true;
+        if (_compraMercaderia && _lineas.length == 1 && _centavos != null) {
+          if (_lineas.single.autoImporte) {
+            _lineas.single.valor.text = _dinero(_baseParaLineas);
+          }
+        }
+        _errorProductos = null;
       }),
       onMontoSubmitted: (_) => _ultimoPaso ? _guardar() : _continuar(),
       onContraparteChanged: (_) => setState(() {}),
@@ -810,28 +1253,74 @@ class _RegistroHojaState extends State<RegistroHoja> {
       }),
     );
 
-    final pasoMercaderia = PasoMercaderia(
+    final pasoProductos = PasoProductos(
+      compra: _compraMercaderia,
       venta: _venta,
-      seleccionada: _mercaderiaId,
       esServicio: _ventaEsServicio,
-      costo: _costoMercaderia,
+      sinIgv: _sinIgvCompra,
+      exportacion: _ventaExportacion,
+      lineas: _lineas,
+      productos: estado.productosActivos,
       fecha: _fecha,
-      errorTipo: _errorMercaderia,
-      errorCosto: _errorCostoMercaderia,
-      onSeleccionar: (id) => setState(() {
-        _mercaderiaId = id;
-        if (id != null) {
-          _ventaEsServicio = false;
-        } else {
-          _costoMercaderia.clear();
+      montoCentavos: centavos,
+      sumaLineas: _sumaLineas,
+      montoCalculado: _montoCalculadoLineas,
+      cuadra: centavos != null && _sumaLineas == _baseParaLineas,
+      intento: _intentoProductos,
+      error: _errorProductos,
+      tipoComprobante: _tipoComprobanteProveedor,
+      serieComprobante: _serieComprobanteProveedor,
+      numeroComprobante: _numeroComprobanteProveedor,
+      errorComprobante: _errorComprobanteProveedor,
+      stockDisponible: (id) => estado.stockDisponible(
+        id,
+        fecha: _fecha,
+        excluirId: widget.original?.id,
+      ),
+      ultimaFecha: (id) =>
+          estado.ultimaFechaDe(id, excluirId: widget.original?.id),
+      costoDeSalida: (id, cantidad) {
+        try {
+          return _kardexFormulario.costoDeSalida(id, cantidad, _fecha);
+        } on StateError {
+          return null;
         }
+      },
+      onAgregarLinea: _agregarLinea,
+      onQuitarLinea: _quitarLinea,
+      onCambioLinea: _cambioLinea,
+      onSeleccionarProducto: _seleccionarProducto,
+      onServicio: (valor) => setState(() {
+        _ventaEsServicio = valor;
+        if (valor) {
+          for (final linea in _lineas) {
+            linea.dispose();
+          }
+          _lineas.clear();
+          _ventaExportacion = false;
+        }
+        _errorProductos = null;
       }),
-      onServicio: (esServicio) => setState(() {
-        _ventaEsServicio = esServicio;
-        _mercaderiaId = null;
-        _costoMercaderia.clear();
+      onSinIgv: (valor) => setState(() {
+        _sinIgvCompra = valor;
+        _errorProductos = null;
       }),
-      onCosto: () => setState(() {}),
+      onExportacion: (valor) => setState(() {
+        _ventaExportacion = valor;
+        _errorProductos = null;
+      }),
+      onUsarMonto: _usarMontoCalculado,
+      onTipoComprobante: (valor) => setState(() {
+        if (valor != null) _tipoComprobanteProveedor = valor;
+        _errorComprobanteProveedor = _validarComprobanteProveedor();
+        _errorProductos = null;
+      }),
+      onSerieComprobante: (_) => setState(() {
+        _errorComprobanteProveedor = _validarComprobanteProveedor();
+      }),
+      onNumeroComprobante: (_) => setState(() {
+        _errorComprobanteProveedor = _validarComprobanteProveedor();
+      }),
     );
 
     final pasoPago = PasoEfectivo(
@@ -847,7 +1336,6 @@ class _RegistroHojaState extends State<RegistroHoja> {
       error: _errorPago,
     );
 
-    final estado = context.watch<EstadoCaja>();
     final pasoVoucher = PasoVoucher(
       tipo: widget.tipo,
       medio: _medio,
@@ -880,6 +1368,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
       onElegirArchivo: () => _adjuntar(camara: false),
       onQuitarArchivo: () => setState(() {
         _voucher = null;
+        _rutaVoucherOriginal = null;
         _lectura = null;
         _errorLectura = null;
       }),
@@ -897,6 +1386,10 @@ class _RegistroHojaState extends State<RegistroHoja> {
       movimiento: _provisional(),
       negocio: context.watch<EstadoCaja>().negocio,
       conBoleta: _emiteBoleta,
+      itemsBoleta: ItemComprobante.deNuevas(
+        _lineasNuevas,
+        context.read<EstadoCaja>().producto,
+      ),
       tesorero: _tesorero,
       tesoreroFijo: _tesoreroFijo,
       onTesoreroFijo: (valor) => setState(() => _tesoreroFijo = valor),
@@ -904,7 +1397,7 @@ class _RegistroHojaState extends State<RegistroHoja> {
 
     final cuerpo = switch (_paso) {
       _Paso.datos => pasoDatos,
-      _Paso.mercaderia => pasoMercaderia,
+      _Paso.productos => pasoProductos,
       _Paso.voucher => pasoVoucher,
       _Paso.pago => pasoPago,
       _Paso.comprobante => pasoComprobante,

@@ -1,5 +1,7 @@
 import '../core/formato.dart';
 import 'boleta.dart';
+import 'acta_conteo.dart';
+import 'almacen.dart';
 import 'efectivo.dart';
 import 'enums.dart';
 import 'jornada.dart';
@@ -235,13 +237,58 @@ class Documentos {
   static String _fechaHora(DateTime d) =>
       '${Formato.fecha(d)} · ${Formato.hora(d)}';
 
-  // --- Boleta ---
+  // --- Factura y boleta de venta ---
 
+  /// Un valor unitario con 2 decimales, o hasta 4 si no es exacto al
+  /// céntimo: 7.00, 33.3333.
+  static String _unitario(double soles) {
+    final centavos = (soles * 100).round();
+    if ((soles * 100 - centavos).abs() < 0.005) {
+      return Formato.monto(centavos / 100);
+    }
+    var decimales = soles.toStringAsFixed(4).split('.')[1];
+    while (decimales.length > 2 && decimales.endsWith('0')) {
+      decimales = decimales.substring(0, decimales.length - 1);
+    }
+    final enteros = Formato.monto(soles.truncateToDouble()).split('.').first;
+    return '$enteros.$decimales';
+  }
+
+  /// La factura electrónica o la boleta de venta electrónica, con sus
+  /// productos, como las del Excel. Una venta de antes del inventario sale
+  /// como la boleta de control interno que se emitió entonces.
   static HojaDoc boleta(Boleta boleta) {
     final m = boleta.movimiento;
     final n = boleta.negocio;
     final d = boleta.desglose;
     final total = _monto(boleta.total);
+    final electronica = boleta.electronica;
+
+    // Sin productos, una sola línea: un servicio o una venta de antes.
+    final filas = boleta.items.isEmpty
+        ? [
+            [
+              '1',
+              electronica ? 'ZZ' : 'UND',
+              boleta.descripcion,
+              _monto(d.base),
+              '',
+              _monto(d.base),
+            ],
+          ]
+        : [
+            for (final i in boleta.items)
+              [
+                Cantidad.texto(i.cantidad),
+                i.unidad,
+                i.codigo.isEmpty
+                    ? i.descripcion
+                    : '${i.codigo} · ${i.descripcion}',
+                _unitario(i.valorUnitario),
+                i.descuento == 0 ? '' : _monto(i.descuento),
+                _monto(i.valorVenta),
+              ],
+          ];
 
     return HojaDoc(
       alto: HojaDoc.altoA4,
@@ -250,15 +297,15 @@ class Documentos {
           razonSocial: n.razonSocial,
           documento: n.documento,
           direccion: n.direccion,
-          titulo: 'BOLETA DE VENTA',
-          subtitulo: 'DE CONTROL INTERNO',
-          numero: m.numeroBoleta == null
-              ? 'N° al guardar'
-              : 'N° ${boleta.numeroImpreso}',
+          titulo: boleta.titulo,
+          subtitulo: boleta.subtitulo,
+          numero: boleta.numerado
+              ? 'N° ${boleta.numeroImpreso}'
+              : '${boleta.numero.split('-').first} · N° al guardar',
         ),
         const EspacioDoc(12),
         DatosDoc([
-          ('Cliente', boleta.cliente),
+          (boleta.esFactura ? 'Señor(es)' : 'Cliente', boleta.cliente),
           (boleta.tipoDocumento, boleta.documentoCliente),
         ]),
         const EspacioDoc(8),
@@ -267,20 +314,22 @@ class Documentos {
           ('HORA', Formato.hora(m.creadoEn)),
           ('MEDIO DE PAGO', m.medio.etiqueta),
           ('MONEDA', 'SOLES'),
-          ('COND. DE PAGO', 'CONTADO'),
+          if (m.exportacion)
+            ('OPERACIÓN', 'EXPORTACIÓN')
+          else
+            ('FORMA DE PAGO', 'CONTADO'),
         ]),
         const EspacioDoc(8),
         TablaDoc(
           columnas: const [
-            ColumnaDoc.centro('CANT.', ancho: 42),
-            ColumnaDoc.centro('U.M.', ancho: 46),
+            ColumnaDoc.centro('CANT.', ancho: 48),
+            ColumnaDoc.centro('U.M.', ancho: 36),
             ColumnaDoc('DESCRIPCIÓN'),
-            ColumnaDoc.derecha('P. UNIT.', ancho: 70),
-            ColumnaDoc.derecha('IMPORTE', ancho: 76),
+            ColumnaDoc.derecha('V. UNIT.', ancho: 64),
+            ColumnaDoc.derecha('DSCTO.', ancho: 54),
+            ColumnaDoc.derecha('VALOR VENTA', ancho: 72),
           ],
-          filas: [
-            ['1', 'UND', boleta.descripcion, total, total],
-          ],
+          filas: filas,
           rellenar: true,
         ),
         const EspacioDoc(8),
@@ -288,19 +337,20 @@ class Documentos {
           son: boleta.montoEnLetras,
           detalle: m.detalleEfectivo == null ? null : boleta.medioDetallado,
           totales: [
-            (
-              d.igv > 0 ? 'OP. GRAVADA (S/)' : 'OP. INAFECTA (S/)',
-              _monto(d.base),
-            ),
+            if (boleta.descuentos > 0)
+              ('DESCUENTOS (S/)', _monto(boleta.descuentos)),
+            ('${boleta.rotuloBase} (S/)', _monto(d.base)),
             ('IGV ${Boleta.tasaIgvPorcentaje}% (S/)', _monto(d.igv)),
             ('IMPORTE TOTAL (S/)', total),
           ],
         ),
         const EspacioDoc(16),
-        const PieDoc(
-          'Boleta de venta de control interno del negocio. No es un '
-          'comprobante de pago electrónico y no se informa a SUNAT.   '
-          '¡Gracias por su compra!',
+        PieDoc(
+          electronica
+              ? 'Representación impresa de la ${boleta.nombre.toLowerCase()}.'
+                    '   ¡Gracias por su compra!'
+              : 'Boleta de venta de control interno del negocio, emitida '
+                    'antes del inventario.   ¡Gracias por su compra!',
         ),
       ],
     );
@@ -517,6 +567,99 @@ class Documentos {
         FirmasDoc([
           (caja.responsable, 'Responsable de caja'),
           (caja.supervisor, 'Supervisor'),
+        ], margen: 40),
+      ],
+    );
+  }
+
+  // --- Acta de conteo de inventario ---
+
+  static HojaDoc actaConteo(ActaConteo acta) {
+    final conteo = acta.conteo;
+    return HojaDoc(
+      ancho: HojaDoc.altoA4,
+      margen: const MargenDoc(26, 24, 26, 22),
+      pie: PieDoc(
+        'Acta de conteo físico del inventario. Las diferencias se registran '
+        'como ajustes del kardex al costo promedio.',
+      ),
+      bloques: [
+        EncabezadoDoc(
+          razonSocial: acta.negocio.razonSocial,
+          documento: acta.negocio.documento,
+          direccion: acta.negocio.direccion,
+          titulo: acta.anual
+              ? 'ACTA DE CONTEO ANUAL DE INVENTARIO'
+              : 'ACTA DE CONTEO FÍSICO',
+          subtitulo: acta.anual
+              ? 'SALDOS AL 31 DE DICIEMBRE'
+              : 'INVENTARIO DE MERCADERÍAS',
+          numero: Formato.fecha(conteo.fecha),
+          anchoRecuadro: 188,
+        ),
+        const EspacioDoc(12),
+        DatosDoc(
+          [
+            ('Fecha del conteo', Formato.fecha(conteo.fecha)),
+            ('Responsable', acta.responsable.isEmpty ? '—' : acta.responsable),
+            ('Registrada', _fechaHora(acta.registradaEn)),
+            ('Productos contados', '${conteo.filas.length}'),
+            ('Con diferencias', '${conteo.conDiferencia.length}'),
+          ],
+          columnas: 2,
+          anchoRotulo: 82,
+        ),
+        const EspacioDoc(14),
+        TablaDoc(
+          columnas: const [
+            ColumnaDoc.centro('N°', ancho: 30),
+            ColumnaDoc.centro('CÓDIGO', ancho: 66),
+            ColumnaDoc('PRODUCTO'),
+            ColumnaDoc.centro('UNID.', ancho: 44),
+            ColumnaDoc.derecha('SISTEMA', ancho: 68),
+            ColumnaDoc.derecha('CONTADO', ancho: 68),
+            ColumnaDoc.derecha('DIF. CANT.', ancho: 70),
+            ColumnaDoc.derecha('DIF. S/', ancho: 74),
+          ],
+          filas: [
+            for (var i = 0; i < conteo.filas.length; i++)
+              [
+                '${i + 1}',
+                conteo.filas[i].codigo,
+                conteo.filas[i].producto,
+                conteo.filas[i].unidad,
+                Cantidad.texto(conteo.filas[i].cantidadSistema),
+                Cantidad.texto(conteo.filas[i].cantidadContada),
+                Cantidad.texto(conteo.filas[i].diferenciaCantidad),
+                _monto(conteo.filas[i].diferenciaValor),
+              ],
+          ],
+          total: [
+            '',
+            '',
+            'TOTALES',
+            '',
+            Cantidad.texto(
+              conteo.filas.fold(0, (s, f) => s + f.cantidadSistema),
+            ),
+            Cantidad.texto(
+              conteo.filas.fold(0, (s, f) => s + f.cantidadContada),
+            ),
+            '',
+            _monto(conteo.diferenciaValor),
+          ],
+          vacio: 'No hay productos en el catálogo.',
+        ),
+        const EspacioDoc(12),
+        CeldasDoc([
+          ('VALOR SEGÚN SISTEMA (S/)', _monto(conteo.valorSistema)),
+          ('VALOR CONTADO (S/)', _monto(conteo.valorContado)),
+          ('DIFERENCIA (S/)', _monto(conteo.diferenciaValor)),
+        ]),
+        const EspacioDoc(44),
+        FirmasDoc([
+          (acta.responsable, 'Responsable del conteo'),
+          ('', 'Verificador'),
         ], margen: 40),
       ],
     );

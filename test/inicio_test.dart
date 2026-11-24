@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:mi_caja/datos/export/impresion.dart';
 import 'package:mi_caja/datos/repositorio/repositorio_demo.dart';
+import 'package:mi_caja/dominio/almacen.dart';
 import 'package:mi_caja/dominio/banco.dart';
 import 'package:mi_caja/dominio/boleta.dart';
 import 'package:mi_caja/dominio/categoria.dart';
@@ -191,6 +192,11 @@ class RepositorioFalso extends RepositorioDemo {
     DetalleEfectivo? detalleEfectivo,
     String? mercaderiaId,
     int? costoCentavos,
+    List<LineaNueva> lineas = const [],
+    Comprobante? comprobante,
+    bool exportacion = false,
+    bool sinIgv = false,
+    String? registradoPor,
   }) async {
     final categoria = Categoria.porId(categoriaId);
     final m = Movimiento(
@@ -891,11 +897,9 @@ void main() {
     await tester.tap(find.text('Continuar'));
     await tester.pumpAndSettle();
 
-    // La venta pasa por el paso de mercadería: o el tipo, o un servicio.
-    expect(find.text('¿Qué mercadería?'), findsOneWidget);
-    await tester.tap(find.text('Continuar'));
-    await tester.pumpAndSettle();
-    expect(find.text('Elige o crea un tipo de mercadería'), findsOneWidget);
+    // La venta pasa por Productos; los servicios conservan la opción
+    // explícita «No es mercadería» y no requieren líneas.
+    expect(find.text('Productos'), findsWidgets);
     await tester.tap(find.text('No es mercadería'));
     await tester.pumpAndSettle();
     await alVoucher(tester);
@@ -904,7 +908,7 @@ void main() {
     await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
     expect(
-      find.text('Desde S/ 700 la boleta lleva el nombre del cliente'),
+      find.text('Desde S/ 700 el comprobante lleva el nombre del cliente'),
       findsOneWidget,
     );
     // Desde S/ 700 el voucher también es obligatorio.

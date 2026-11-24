@@ -46,7 +46,9 @@ class BaseDatos {
       await db.execute(Esquema.crearCategorias);
       await db.execute(Esquema.crearJornadas);
       await db.execute(Esquema.crearFondo);
-      for (final indice in Esquema.indices) {
+      await db.execute(Esquema.crearKardex);
+      await db.execute(Esquema.crearCierres);
+      for (final indice in [...Esquema.indices, ...Esquema.indicesV9]) {
         await db.execute(indice);
       }
     },
@@ -83,8 +85,27 @@ class BaseDatos {
           await db.execute(paso);
         }
       }
+      if (desde < 9) {
+        for (final (tabla, columna, definicion) in Esquema.columnasV9) {
+          await _agregarSiFalta(db, tabla, columna, definicion);
+        }
+        for (final paso in Esquema.migracionV9) {
+          await db.execute(paso);
+        }
+      }
     },
   );
+
+  static Future<void> _agregarSiFalta(
+    Database db,
+    String tabla,
+    String columna,
+    String definicion,
+  ) async {
+    final columnas = await db.rawQuery('PRAGMA table_info($tabla)');
+    if (columnas.any((c) => c['name'] == columna)) return;
+    await db.execute('ALTER TABLE $tabla ADD COLUMN $columna $definicion');
+  }
 
   Future<void> cerrar() async {
     await _db?.close();

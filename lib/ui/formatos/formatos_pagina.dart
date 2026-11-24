@@ -17,6 +17,7 @@ import '../widgets/esqueleto.dart';
 import '../historial/barra_filtros.dart';
 import '../widgets/filtro_monto.dart';
 import 'hoja_formato.dart';
+import '../inventario/inventario_ventana.dart';
 
 /// Los formatos oficiales del libro de caja: el 1.1 para el efectivo y el 1.2
 /// para la cuenta corriente.
@@ -241,6 +242,8 @@ class _FormatosPaginaState extends State<FormatosPagina> {
               retraso: const Duration(milliseconds: 70),
               child: HojaFormato(libro: libro, filtro: _filtro),
             ),
+            const SizedBox(height: 16),
+            const _FormatosInventario(),
           ],
         );
       },
@@ -860,6 +863,62 @@ class _FiltrosVista extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+/// Los formatos del inventario (13.1 y 12.1) viven en el kardex: aquí sólo
+/// se avisa dónde están y se abre la ventana del inventario en esa sección.
+class _FormatosInventario extends StatelessWidget {
+  const _FormatosInventario();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: Tokens.superficie,
+        borderRadius: BorderRadius.circular(Tokens.radio),
+        border: Border.all(color: Tokens.borde),
+      ),
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 14,
+        runSpacing: 10,
+        children: [
+          const Icon(Icons.receipt_long_outlined, color: Tokens.marca),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Formatos del inventario: 13.1 y 12.1',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Tokens.texto,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'El registro de inventario permanente valorizado y en '
+                  'unidades físicas se descarga desde el kardex de cada '
+                  'producto, en PDF o CSV.',
+                  style: TextStyle(fontSize: 12.5, color: Tokens.texto2),
+                ),
+              ],
+            ),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () =>
+                InventarioVentana.abrir(context, seccion: 'kardex'),
+            icon: const Icon(Icons.open_in_new_rounded, size: 18),
+            label: const Text('Abrir el kardex'),
+          ),
+        ],
+      ),
     );
   }
 }

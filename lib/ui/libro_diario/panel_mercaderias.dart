@@ -2,21 +2,33 @@ import 'package:flutter/material.dart';
 
 import '../../core/formato.dart';
 import '../../core/tema.dart';
+import '../../dominio/almacen.dart' show Cantidad;
 import '../../dominio/inventario.dart';
+import '../../dominio/kardex.dart';
+import '../../dominio/mercaderia.dart';
 
 /// El panel de mercaderías: por cada tipo, lo comprado (sin IGV), el costo de
 /// lo vendido y el saldo. Es la base del asiento 2 y del inventario.
+/// Ahora también muestra cantidad y valor del kardex.
 class PanelMercaderias extends StatelessWidget {
   const PanelMercaderias({
     super.key,
     required this.inventario,
     required this.hasta,
+    this.kardex,
+    this.mercaderias,
   });
 
   final InventarioMercaderias inventario;
 
   /// Hasta qué día llega la cuenta: es acumulada, no del período.
   final DateTime hasta;
+
+  /// Kardex opcional para mostrar cantidad y valor unitario.
+  final Kardex? kardex;
+
+  /// Catálogo de mercaderías para nombres.
+  final List<Mercaderia>? mercaderias;
 
   @override
   Widget build(BuildContext context) {
@@ -59,7 +71,12 @@ class PanelMercaderias extends StatelessWidget {
           else
             for (var i = 0; i < inventario.tipos.length; i++) ...[
               if (i > 0) const Divider(height: 20),
-              _FilaTipo(saldo: inventario.tipos[i]),
+              _FilaTipo(
+                saldo: inventario.tipos[i],
+                kardex: kardex,
+                mercaderias: mercaderias,
+                hasta: hasta,
+              ),
             ],
         ],
       ),
@@ -68,13 +85,29 @@ class PanelMercaderias extends StatelessWidget {
 }
 
 class _FilaTipo extends StatelessWidget {
-  const _FilaTipo({required this.saldo});
+  const _FilaTipo({
+    required this.saldo,
+    this.kardex,
+    this.mercaderias,
+    required this.hasta,
+  });
 
   final SaldoMercaderia saldo;
+  final Kardex? kardex;
+  final List<Mercaderia>? mercaderias;
+  final DateTime hasta;
 
   @override
   Widget build(BuildContext context) {
     final negativo = saldo.saldo < 0;
+
+    // Obtener cantidad y valor del kardex si está disponible
+    final saldoAlmacen =
+        kardex?.saldo(saldo.id, al: hasta) ?? saldo.saldoAlmacen;
+    final cantidad = saldoAlmacen?.cantidad ?? 0;
+    final valor = saldoAlmacen?.costo ?? saldo.saldo;
+    final costoUnitario = saldoAlmacen?.costoUnitario ?? 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -90,7 +123,7 @@ class _FilaTipo extends StatelessWidget {
               ),
             ),
             Text(
-              Formato.soles(saldo.saldo / 100),
+              Formato.soles(valor / 100),
               style: TextStyle(
                 fontWeight: FontWeight.w700,
                 color: negativo ? Tokens.salio : Tokens.texto,
@@ -115,6 +148,38 @@ class _FilaTipo extends StatelessWidget {
             ),
           ],
         ),
+        // Mostrar cantidad y valor unitario si hay kardex
+        if (kardex != null) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: _CifraCantidad(
+                  'Cantidad',
+                  cantidad,
+                  _unidadAbreviatura(saldo.id),
+                ),
+              ),
+              Expanded(
+                child: _CifraCantidad(
+                  'Valor unit.',
+                  (costoUnitario * 100).round(),
+                  '',
+                  esMonto: true,
+                ),
+              ),
+              const Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    'Kardex',
+                    style: TextStyle(fontSize: 11.5, color: Tokens.texto2),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
         if (negativo) ...[
           const SizedBox(height: 6),
           const Text(
@@ -124,6 +189,19 @@ class _FilaTipo extends StatelessWidget {
         ],
       ],
     );
+  }
+
+  String _unidadAbreviatura(String mercaderiaId) {
+    final m = mercaderias?.firstWhere(
+      (m) => m.id == mercaderiaId,
+      orElse: () => Mercaderia(
+        id: mercaderiaId,
+        nombre: mercaderiaId,
+        creadoEn: DateTime.now(),
+        unidad: '07',
+      ),
+    );
+    return m?.abreviaturaUnidad ?? 'und';
   }
 }
 
@@ -144,6 +222,43 @@ class _Cifra extends StatelessWidget {
         ),
         Text(
           Formato.soles(centavos / 100),
+          style: const TextStyle(
+            fontSize: 12.5,
+            color: Tokens.texto,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CifraCantidad extends StatelessWidget {
+  const _CifraCantidad(
+    this.rotulo,
+    this.valor,
+    this.unidad, {
+    this.esMonto = false,
+  });
+
+  final String rotulo;
+  final int valor;
+  final String unidad;
+  final bool esMonto;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          rotulo,
+          style: const TextStyle(fontSize: 11.5, color: Tokens.texto2),
+        ),
+        Text(
+          esMonto
+              ? Formato.soles(valor / 100)
+              : '${Cantidad.texto(valor)} $unidad'.trim(),
           style: const TextStyle(
             fontSize: 12.5,
             color: Tokens.texto,

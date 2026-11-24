@@ -186,8 +186,16 @@ class Kardex {
           .costoTotal;
 
   Map<String, int> costoDeVentas(Periodo periodo, {DateTime? referencia}) {
+    final (desde, hasta) = periodo.rango(referencia);
+    return costoDeVentasEn(desde: desde, hasta: hasta);
+  }
+
+  Map<String, int> costoDeVentasEn({
+    required DateTime desde,
+    required DateTime hasta,
+  }) {
     final cuentas = <String, int>{};
-    final rango = periodo.rango(referencia);
+    final rango = (_dia(desde), _dia(hasta));
     for (final fila in _porId.values.where((f) => _enRango(f, rango))) {
       final l = fila.linea;
       final devolucion = l.operacion == OperacionAlmacen.devolucionRecibida;

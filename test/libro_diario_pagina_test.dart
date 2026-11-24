@@ -10,6 +10,7 @@ import 'package:mi_caja/dominio/categoria.dart';
 import 'package:mi_caja/dominio/enums.dart';
 import 'package:mi_caja/dominio/igv.dart';
 import 'package:mi_caja/dominio/inventario.dart';
+import 'package:mi_caja/dominio/kardex.dart';
 import 'package:mi_caja/dominio/libro_diario.dart';
 import 'package:mi_caja/dominio/movimiento.dart';
 import 'package:mi_caja/dominio/negocio.dart';
@@ -85,6 +86,7 @@ void main() {
     List<Movimiento> movs,
     LeerMercaderia leer, {
     required Size tamanio,
+    Kardex? kardex,
   }) async {
     tester.view.physicalSize = tamanio;
     tester.view.devicePixelRatio = 1;
@@ -104,6 +106,8 @@ void main() {
           body: LibroDiarioVista(
             libro: armar(movs, leer),
             inventario: InventarioMercaderias.de(movs, leer: leer),
+            kardex: kardex ?? Kardex.de(const []),
+            mercaderias: const [],
             periodo: null,
             onPeriodo: (_) {},
             onElegirFechas: () {},
@@ -170,14 +174,44 @@ void main() {
     testWidgets('el panel de mercaderías da comprado, costo y saldo', (
       t,
     ) async {
-      await montar(t, ejemplos, tela, tamanio: celular);
+      await montar(
+        t,
+        ejemplos,
+        tela,
+        tamanio: celular,
+        kardex: Kardex.de([
+          LineaAlmacen(
+            id: 'compra-tela',
+            mercaderiaId: 'tela',
+            fecha: DateTime(2026, 10, 11),
+            numero: 1,
+            operacion: OperacionAlmacen.compra,
+            entrada: true,
+            cantidad: 1000,
+            costoTotal: 100000,
+          ),
+          LineaAlmacen(
+            id: 'venta-tela',
+            mercaderiaId: 'tela',
+            fecha: DateTime(2026, 10, 12),
+            numero: 2,
+            operacion: OperacionAlmacen.venta,
+            entrada: false,
+            cantidad: 1000,
+            importe: 200000,
+            movimientoId: 'm2',
+            cuentaCosto: '69121',
+          ),
+        ]),
+      );
 
       expect(find.text('Mercaderías'), findsOneWidget);
       expect(find.text('tela'), findsWidgets);
       expect(find.text('Comprado'), findsOneWidget);
       expect(find.text('Costo vendido'), findsOneWidget);
       // Compró 1,000 sin IGV y vendió con costo 1,000: el saldo queda en cero.
-      expect(find.text('S/ 0.00'), findsOneWidget);
+      expect(find.text('S/ 0.00'), findsNWidgets(2));
+      expect(find.text('Kardex'), findsOneWidget);
     });
   });
 

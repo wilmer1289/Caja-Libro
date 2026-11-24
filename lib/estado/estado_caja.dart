@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../core/formato.dart';
 import '../datos/repositorio/repositorio_movimientos.dart';
+import '../dominio/almacen.dart';
 import '../dominio/banco.dart';
 import '../dominio/categoria.dart';
+import '../dominio/cierre_mes.dart';
 import '../dominio/efectivo.dart';
 import '../dominio/enums.dart';
 import '../dominio/fondo.dart';
@@ -18,6 +20,7 @@ import '../dominio/inventario.dart';
 import '../dominio/kardex.dart';
 import '../dominio/libro_diario.dart';
 import '../dominio/resumen.dart';
+import '../dominio/reglas_mercaderia.dart';
 
 /// El estado de la app: qué mostrar en cada momento.
 ///
@@ -27,31 +30,227 @@ import '../dominio/resumen.dart';
 class EstadoCaja extends ChangeNotifier {
   EstadoCaja(this._repo, {this.leerLineasAlmacen});
 
-  /// P2 proporciona las líneas vigentes cuando esté disponible la base v9.
+  /// Otra fuente de líneas, para las pruebas del kardex. Sin ella, el
+  /// kardex sale de las líneas que guarda la base v9 ([lineasAlmacen]).
   final List<LineaAlmacen> Function()? leerLineasAlmacen;
-  Kardex get kardex => Kardex.de(leerLineasAlmacen?.call() ?? const []);
+  Kardex get kardex => Kardex.de(leerLineasAlmacen?.call() ?? lineasAlmacen);
 
   final RepositorioMovimientos _repo;
 
   List<Movimiento> _movimientos = const [];
+  List<Movimiento> _anulados = const [];
   List<Jornada> _jornadas = const [];
   FondoNegocio? _fondo;
   Negocio _negocio = Negocio.vacio;
   List<Mercaderia> _mercaderias = const [];
+  List<LineaAlmacen> _lineas = const [];
+  List<CierreMes> _cierres = const [];
 
+  /// Quién entró a la app. Lo pone la pantalla de ingreso, y queda como
+  /// «registrado por» en cada movimiento y en cada línea del almacén.
+  String usuario = '';
+
+  /// Los movimientos anulados, del más nuevo al más viejo. No cuentan en
+  /// nada; están para mostrarlos con su marca.
+  List<Movimiento> get anulados => List.unmodifiable(_anulados);
+
+  // --- Meses cerrados ---
+
+  /// Los meses cerrados, del más viejo al más nuevo.
+  List<CierreMes> get cierres => List.unmodifiable(_cierres);
+
+  /// Si esa fecha cae en un mes cerrado: ya no se registra nada con ella.
+  bool mesCerrado(DateTime fecha) => CierreMes.cerrado(_cierres, fecha);
+
+  /// Cierra un mes que ya terminó (y con él, los anteriores).
+  Future<CierreMes> cerrarMes(int anio, int mes) async {
+    final cierre = await _repo.cerrarMes(anio, mes, cerradoPor: usuario);
+    _cierres = await _repo.leerCierres();
+    notifyListeners();
+    return cierre;
+  }
+
+  /// Los productos por nombre, también los desactivados.
   List<Mercaderia> get mercaderias => List.unmodifiable(_mercaderias);
+
+  /// Los productos por código, como en el catálogo.
+  List<Mercaderia> get productos =>
+      List.of(_mercaderias)..sort((a, b) => a.codigo.compareTo(b.codigo));
+
+  /// Los que se pueden elegir al registrar.
+  List<Mercaderia> get productosActivos =>
+      productos.where((m) => m.activo).toList();
+
+  /// Productos activos que llegaron al stock mínimo o quedaron por debajo.
+  /// La misma lista alimenta el contador del encabezado y la tarjeta del resumen.
+  List<AlertaStock> get alertasInventario => kardex.alertas(
+    productosActivos,
+    minimos: {for (final p in productosActivos) p.id: p.stockMinimo},
+  );
+
+  Mercaderia? producto(String id) {
+    for (final m in _mercaderias) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  /// Las líneas del almacén que cuentan, en el orden del kardex. Con esto el
+  /// kardex (P1) calcula costos y saldos: `Kardex.de(lineasAlmacen)`.
+  List<LineaAlmacen> get lineasAlmacen {
+    final vigentes = {for (final m in _movimientos) m.id};
+    return List.unmodifiable(
+      _lineas.where(
+        (l) => l.movimientoId == null || vigentes.contains(l.movimientoId),
+      ),
+    );
+  }
+
+  /// Las líneas de una compra o una venta que cuentan.
+  List<LineaAlmacen> lineasDe(String movimientoId) =>
+      _lineas.where((l) => l.movimientoId == movimientoId).toList();
+
+  /// Las líneas de cualquier movimiento, también de uno anulado (salen
+  /// marcadas como anuladas). Para mostrar su detalle.
+  Future<List<LineaAlmacen>> leerLineasDe(String movimientoId) =>
+      _repo.lineasDeMovimiento(movimientoId);
+
+  /// El último día con algo anotado de un producto. Si se registra con una
+  /// fecha anterior, cambian los costos de lo que vino después: el registro
+  /// lo avisa.
+  DateTime? ultimaFechaDe(String mercaderiaId, {String? excluirId}) =>
+      StockAlmacen.ultimaFecha(
+        lineasAlmacen.where(
+          (l) => excluirId == null || l.movimientoId != excluirId,
+        ),
+        mercaderiaId,
+      );
+
+  /// Cuánto hay de un producto, en milésimas, al cierre de `al` o hoy.
+  int stockDe(String mercaderiaId, {DateTime? al}) =>
+      StockAlmacen.saldo(lineasAlmacen, mercaderiaId, al: al);
+
+  /// Indica si existe historial de almacén para el producto, incluso si una
+  /// compra o venta relacionada fue anulada. El saldo inicial no se repite.
+  bool tieneMovimientosAlmacen(String mercaderiaId) =>
+      _lineas.any((l) => l.mercaderiaId == mercaderiaId);
+
+  /// Cuánto puede salir el día `fecha` sin dejar nada en negativo después.
+  /// Es lo que el registro muestra como "disponible" al vender.
+  int stockDisponible(
+    String mercaderiaId, {
+    DateTime? fecha,
+    String? excluirId,
+  }) => StockAlmacen.disponible(
+    lineasAlmacen.where(
+      (l) => excluirId == null || l.movimientoId != excluirId,
+    ),
+    mercaderiaId,
+    fecha ?? DateTime.now(),
+  );
 
   Future<Mercaderia> agregarMercaderia(String nombre) async {
     final nueva = await _repo.agregarMercaderia(nombre);
-    _mercaderias = [
-      ..._mercaderias,
-      nueva,
-    ]..sort((a, b) => a.nombre.toLowerCase().compareTo(b.nombre.toLowerCase()));
-    notifyListeners();
+    _ponerProducto(nueva);
     return nueva;
   }
 
+  /// Crea un producto (sin `id`) o cambia uno que ya existe.
+  Future<Mercaderia> guardarProducto({
+    String? id,
+    required String nombre,
+    String? codigo,
+    String tipoExistencia = '01',
+    String unidad = '07',
+    int stockMinimo = 0,
+    int? precioSugerido,
+    bool activo = true,
+    String? unidadCompra,
+    int? factorCompra,
+    String? unidadFactura,
+  }) async {
+    final guardado = await _repo.guardarProducto(
+      id: id,
+      nombre: nombre,
+      codigo: codigo,
+      tipoExistencia: tipoExistencia,
+      unidad: unidad,
+      stockMinimo: stockMinimo,
+      precioSugerido: precioSugerido,
+      activo: activo,
+      unidadCompra: unidadCompra,
+      factorCompra: factorCompra,
+      unidadFactura: unidadFactura,
+    );
+    _ponerProducto(guardado);
+    return guardado;
+  }
+
+  void _ponerProducto(Mercaderia producto) {
+    _mercaderias = [
+      for (final m in _mercaderias)
+        if (m.id != producto.id) m,
+      producto,
+    ]..sort((a, b) => a.nombre.toLowerCase().compareTo(b.nombre.toLowerCase()));
+    notifyListeners();
+  }
+
+  /// Lo que entra o sale del almacén sin pasar por caja: saldo inicial,
+  /// merma, desmedro, devolución o ajuste por conteo.
+  Future<LineaAlmacen> registrarEnAlmacen({
+    required OperacionAlmacen operacion,
+    required String mercaderiaId,
+    required DateTime fecha,
+    required int cantidad,
+    bool? entrada,
+    int? costoTotal,
+    String? origenId,
+    Comprobante? comprobante,
+    String glosa = '',
+    bool permitirDesactivado = false,
+  }) async {
+    final linea = await _repo.registrarEnAlmacen(
+      operacion: operacion,
+      mercaderiaId: mercaderiaId,
+      fecha: fecha,
+      cantidad: cantidad,
+      entrada: entrada,
+      costoTotal: costoTotal,
+      origenId: origenId,
+      comprobante: comprobante,
+      glosa: glosa,
+      registradoPor: usuario,
+      permitirDesactivado: permitirDesactivado,
+    );
+    _lineas = await _repo.leerLineasAlmacen();
+    // El primer saldo inicial fija desde cuándo corre el kardex.
+    if (operacion == OperacionAlmacen.saldoInicial) {
+      _negocio = await _repo.leerNegocio();
+    }
+    notifyListeners();
+    return linea;
+  }
+
   DatoMercaderia? leerMercaderia(Movimiento movimiento) {
+    final lineas = lineasDe(movimiento.id);
+    if (lineas.isNotEmpty) {
+      final motor = kardex;
+      final costo = lineas.fold(0, (s, l) => s + motor.costoDe(l.id));
+      final ids = lineas.map((l) => l.mercaderiaId).toSet();
+      final nombres = ids.map((id) => producto(id)?.nombre ?? id).toList();
+      final nombre =
+          movimiento.mercaderiaNombre ??
+          ReglasMercaderia.descripcionDe(nombres);
+      if (ids.length == 1) {
+        return DatoMercaderia(
+          id: ids.single,
+          nombre: nombre,
+          costoCentavos: costo,
+        );
+      }
+      return DatoMercaderia.multiple(nombre: nombre, costoCentavos: costo);
+    }
+
     final id = movimiento.mercaderiaId;
     if (id == null) {
       return movimiento.costoCentavos == 0
@@ -72,26 +271,32 @@ class EstadoCaja extends ChangeNotifier {
   InventarioMercaderias inventarioHasta({DateTime? fecha, String? excluirId}) {
     final corte = fecha ?? DateTime.now();
     final fin = DateTime(corte.year, corte.month, corte.day + 1);
-    final fuente = leerLineasAlmacen;
-    if (fuente != null) {
-      final lineas = fuente()
-          .where(
-            (l) =>
-                l.fecha.isBefore(fin) &&
-                (excluirId == null || l.movimientoId != excluirId),
-          )
-          .toList();
-      return InventarioMercaderias.desdeKardex(
-        Kardex.de(lineas),
-        nombres: {for (final m in mercaderias) m.id: m.nombre},
-      );
-    }
-    return InventarioMercaderias.de(
-      movimientosVigentes
-          .where((m) => m.id != excluirId && m.fecha.isBefore(fin))
-          .toList(),
-      leer: leerMercaderia,
+    final fuente = leerLineasAlmacen?.call() ?? lineasAlmacen;
+    final lineas = fuente
+        .where(
+          (l) =>
+              l.fecha.isBefore(fin) &&
+              (excluirId == null || l.movimientoId != excluirId),
+        )
+        .toList();
+    final movimientosConLineas = lineas
+        .map((l) => l.movimientoId)
+        .whereType<String>()
+        .toSet();
+    final heredados = movimientosVigentes
+        .where(
+          (m) =>
+              m.id != excluirId &&
+              m.fecha.isBefore(fin) &&
+              !movimientosConLineas.contains(m.id),
+        )
+        .toList();
+    final conKardex = InventarioMercaderias.desdeKardex(
+      Kardex.de(lineas),
+      nombres: {for (final m in mercaderias) m.id: m.nombre},
     );
+    final historico = InventarioMercaderias.de(heredados, leer: leerMercaderia);
+    return InventarioMercaderias.combinar(conKardex, historico);
   }
 
   InventarioMercaderias get inventario => inventarioHasta();
@@ -119,6 +324,11 @@ class EstadoCaja extends ChangeNotifier {
         hasta: hasta,
         mercaderia: leerMercaderia,
         ajustes: ajustes,
+        datos: LibroDiarioDatos(
+          kardex: kardex,
+          lineasAlmacen: lineasAlmacen,
+          mercaderias: mercaderias,
+        ),
       );
   bool _cargando = true;
   String? _error;
@@ -413,7 +623,10 @@ class EstadoCaja extends ChangeNotifier {
       // que encontrarlas al dibujarse.
       Categoria.registrarPropias(await _repo.leerCategoriasPropias());
       _mercaderias = await _repo.leerMercaderias();
+      _lineas = await _repo.leerLineasAlmacen();
       _movimientos = await _repo.listar();
+      _anulados = await _repo.listarAnulados();
+      _cierres = await _repo.leerCierres();
       _negocio = await _repo.leerNegocio();
       _jornadas = await _repo.leerJornadas();
       _fondo = await _repo.leerFondo();
@@ -513,6 +726,7 @@ class EstadoCaja extends ChangeNotifier {
       cuentaAsociada: faltante ? '659' : '7599',
       medio: MedioPago.efectivo,
       fecha: DateTime.now(),
+      registradoPor: usuario,
     );
     _movimientos = [ajuste, ..._movimientos]
       ..sort((a, b) => b.fecha.compareTo(a.fecha));
@@ -567,6 +781,10 @@ class EstadoCaja extends ChangeNotifier {
     DetalleEfectivo? detalleEfectivo,
     String? mercaderiaId,
     int? costoCentavos,
+    List<LineaNueva> lineas = const [],
+    Comprobante? comprobante,
+    bool exportacion = false,
+    bool sinIgv = false,
   }) async {
     // El efectivo entra y sale de la caja del día: sin una abierta no hay
     // dónde ponerlo. El formulario ya no deja seguir; esto es la segunda
@@ -599,7 +817,13 @@ class EstadoCaja extends ChangeNotifier {
       detalleEfectivo: detalleEfectivo,
       mercaderiaId: mercaderiaId,
       costoCentavos: costoCentavos,
+      lineas: lineas,
+      comprobante: comprobante,
+      exportacion: exportacion,
+      sinIgv: sinIgv,
+      registradoPor: usuario,
     );
+    if (lineas.isNotEmpty) _lineas = await _repo.leerLineasAlmacen();
 
     ultimoMedio = medio;
     reciboPorDefecto = conRecibo;
@@ -612,6 +836,84 @@ class EstadoCaja extends ChangeNotifier {
     recienRegistrado = nuevo.id;
     _movimientos = [nuevo, ..._movimientos]
       ..sort((a, b) => b.fecha.compareTo(a.fecha));
+    notifyListeners();
+    return nuevo;
+  }
+
+  /// "Anular y volver a registrar": el original queda anulado y a la vista
+  /// (en [anulados]), y el nuevo ocupa su lugar. Recibe lo mismo que
+  /// [registrar], ya corregido.
+  Future<Movimiento> corregir(
+    Movimiento original, {
+    required Tipo tipo,
+    required int centavos,
+    required String categoriaId,
+    required String concepto,
+    required MedioPago medio,
+    required DateTime fecha,
+    String? contraparte,
+    String? documentoContraparte,
+    String? numeroTransaccion,
+    String? bancoTercero,
+    Vinculo vinculo = Vinculo.tercero,
+    DocumentoPago documentoPago = DocumentoPago.factura,
+    Situacion situacion = Situacion.cartera,
+    String? rutaFoto,
+    String? cuentaAsociada,
+    bool? conIgv,
+    bool conRecibo = false,
+    String? tesorero,
+    DetalleEfectivo? detalleEfectivo,
+    String? mercaderiaId,
+    int? costoCentavos,
+    List<LineaNueva> lineas = const [],
+    Comprobante? comprobante,
+    bool exportacion = false,
+    bool sinIgv = false,
+  }) async {
+    if (medio == MedioPago.efectivo && cajaAbierta == null) {
+      throw ArgumentError(
+        'La caja está cerrada: ábrela en "Arqueo de caja" para registrar en '
+        'efectivo.',
+      );
+    }
+    final nuevo = await _repo.corregir(
+      original,
+      tipo: tipo,
+      centavos: centavos,
+      categoriaId: categoriaId,
+      concepto: concepto,
+      medio: medio,
+      fecha: fecha,
+      contraparte: contraparte,
+      documentoContraparte: documentoContraparte,
+      numeroTransaccion: numeroTransaccion,
+      bancoTercero: bancoTercero,
+      vinculo: vinculo,
+      documentoPago: documentoPago,
+      situacion: situacion,
+      rutaFoto: rutaFoto,
+      cuentaAsociada: cuentaAsociada,
+      conIgv: conIgv,
+      conRecibo: conRecibo,
+      tesorero: tesorero,
+      detalleEfectivo: detalleEfectivo,
+      mercaderiaId: mercaderiaId,
+      costoCentavos: costoCentavos,
+      lineas: lineas,
+      comprobante: comprobante,
+      exportacion: exportacion,
+      sinIgv: sinIgv,
+      registradoPor: usuario,
+    );
+    _lineas = await _repo.leerLineasAlmacen();
+    _anulados = await _repo.listarAnulados();
+    recienRegistrado = nuevo.id;
+    _movimientos = [
+      nuevo,
+      for (final m in _movimientos)
+        if (m.id != original.id) m,
+    ]..sort((a, b) => b.fecha.compareTo(a.fecha));
     notifyListeners();
     return nuevo;
   }

@@ -22,6 +22,7 @@ import 'shell/barra_lateral.dart';
 import 'shell/encabezado.dart';
 import 'negocio/negocio_pagina.dart';
 import 'shell/secciones.dart';
+import 'inventario/inventario_ventana.dart';
 
 /// Ancho a partir del cual se usa la disposición de escritorio.
 const _anchoEscritorio = 900.0;
@@ -64,6 +65,15 @@ class _InicioState extends State<Inicio> {
     _desplazado = false;
   });
 
+  void _abrirInventario() => InventarioVentana.abrir(context);
+
+  void _abrirInventarioDesdeMenu() {
+    _armazon.currentState?.closeEndDrawer();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _abrirInventario();
+    });
+  }
+
   /// Escucha sólo el desplazamiento vertical de la página misma (profundidad
   /// cero): las tablas que se deslizan de costado no cuentan.
   bool _alDesplazar(ScrollNotification aviso) {
@@ -76,6 +86,7 @@ class _InicioState extends State<Inicio> {
   @override
   void initState() {
     super.initState();
+    context.read<EstadoCaja>().usuario = widget.usuario;
     // La primera carga se dispara después del primer frame para que la
     // pantalla aparezca con su esqueleto en vez de quedarse en blanco.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -137,7 +148,13 @@ class _InicioState extends State<Inicio> {
                         ? 'Listo, la entrada quedó anotada'
                         : 'Listo, la salida quedó anotada',
                     if (guardado.numeroBoleta != null)
-                      'Boleta ${Boleta(negocio: Negocio.vacio, movimiento: guardado).numero}',
+                      () {
+                        final b = Boleta(
+                          negocio: Negocio.vacio,
+                          movimiento: guardado,
+                        );
+                        return '${b.nombre} ${b.numero}';
+                      }(),
                     if (guardado.numeroRecibo != null)
                       'Recibo N° ${guardado.numeroRecibo.toString().padLeft(6, '0')}',
                   ].join('  ·  '),
@@ -248,6 +265,8 @@ class _InicioState extends State<Inicio> {
                             usuario: widget.usuario,
                             onSalir: widget.onSalir,
                             onPerfil: () => NegocioPagina.abrir(context),
+                            onInventario: _abrirInventario,
+                            alertasInventario: estado.alertasInventario.length,
                             estrecho: estrecho,
                             elevado: _desplazado,
                             acciones: [
@@ -327,6 +346,8 @@ class _InicioState extends State<Inicio> {
           seleccionada: _seccion,
           resumen: estado.resumen,
           enMenu: true,
+          onInventario: _abrirInventarioDesdeMenu,
+          alertasInventario: estado.alertasInventario.length,
           onSeleccionar: (i) {
             _armazon.currentState?.closeEndDrawer();
             _irA(i);

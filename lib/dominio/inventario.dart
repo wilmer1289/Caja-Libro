@@ -24,6 +24,12 @@ class DatoMercaderia {
       costoCentavos = null,
       esMercaderia = false;
 
+  /// Una operación con más de un producto. No se agrupa bajo un ID ficticio;
+  /// el kardex conserva el detalle por producto y el asiento recibe el costo total.
+  const DatoMercaderia.multiple({required this.nombre, this.costoCentavos})
+    : id = null,
+      esMercaderia = true;
+
   /// El tipo de mercadería: "tela", "pintura".
   final String? id;
   final String? nombre;
@@ -165,6 +171,36 @@ class InventarioMercaderias {
           costoVendido: vendido[id] ?? 0,
         ),
     });
+  }
+
+  /// Combina el kardex de líneas con movimientos antiguos de la v7/v8 que
+  /// todavía no tenían cantidades. El valor histórico se suma al costo del
+  /// saldo actual sin inventar unidades.
+  static InventarioMercaderias combinar(
+    InventarioMercaderias conLineas,
+    InventarioMercaderias heredado,
+  ) {
+    final resultado = Map<String, SaldoMercaderia>.of(conLineas._porTipo);
+    for (final entrada in heredado._porTipo.entries) {
+      final anterior = resultado[entrada.key];
+      final viejo = entrada.value;
+      if (anterior == null) {
+        resultado[entrada.key] = viejo;
+        continue;
+      }
+      final saldoLineas = anterior.saldoAlmacen ?? SaldoAlmacen.cero;
+      resultado[entrada.key] = SaldoMercaderia(
+        id: anterior.id,
+        nombre: anterior.nombre,
+        comprado: anterior.comprado + viejo.comprado,
+        costoVendido: anterior.costoVendido + viejo.costoVendido,
+        saldoAlmacen: SaldoAlmacen(
+          saldoLineas.cantidad,
+          saldoLineas.costo + viejo.saldo,
+        ),
+      );
+    }
+    return InventarioMercaderias._(resultado);
   }
 
   /// Los tipos que tuvieron algún movimiento, por nombre.

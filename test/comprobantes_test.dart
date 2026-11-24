@@ -13,11 +13,14 @@ import 'package:mi_caja/datos/local/movimiento_dao.dart';
 import 'package:mi_caja/datos/local/negocio_dao.dart';
 import 'package:mi_caja/datos/repositorio/repositorio_movimientos.dart';
 import 'package:mi_caja/dominio/boleta.dart';
+import 'package:mi_caja/dominio/almacen.dart';
 import 'package:mi_caja/dominio/categoria.dart';
+import 'package:mi_caja/dominio/documento.dart';
 import 'package:mi_caja/dominio/efectivo.dart';
 import 'package:mi_caja/dominio/enums.dart';
 import 'package:mi_caja/dominio/fondo.dart';
 import 'package:mi_caja/dominio/jornada.dart';
+import 'package:mi_caja/dominio/mercaderia.dart';
 import 'package:mi_caja/dominio/movimiento.dart';
 import 'package:mi_caja/dominio/negocio.dart';
 import 'package:mi_caja/dominio/pcge.dart';
@@ -159,6 +162,188 @@ void main() {
       expect(boleta.desglose.base + boleta.desglose.igv, 11800);
       expect(boleta.desglose.igv, 1800);
     });
+  });
+
+  group('Factura y boleta de venta electrónica', () {
+    test('con RUC sale factura; con DNI o sin documento, boleta', () async {
+      final f = await registrar(
+        centavos: 11800,
+        medio: MedioPago.transferencia,
+        cliente: 'Mujica Cía.',
+        documento: '20304050811',
+      );
+      final factura = Boleta(negocio: Negocio.vacio, movimiento: f);
+      expect(factura.electronica, isTrue);
+      expect(factura.esFactura, isTrue);
+      expect(factura.titulo, 'FACTURA ELECTRÓNICA');
+      expect(factura.subtitulo, isNull);
+      expect(factura.nombre, 'Factura electrónica');
+      expect(factura.numero, 'F001-00000001');
+      expect(factura.numerado, isTrue);
+
+      final b = await registrar(cliente: 'Ana', documento: '10203040');
+      final boleta = Boleta(negocio: Negocio.vacio, movimiento: b);
+      expect(boleta.titulo, 'BOLETA DE VENTA ELECTRÓNICA');
+      expect(boleta.numero, 'B001-00000001');
+      expect(
+        Boleta(negocio: Negocio.vacio, movimiento: await registrar()).numero,
+        'B001-00000002',
+      );
+      expect(
+        ExportadorPdf.nombreBoleta(factura),
+        'Factura electrónica F001-00000001.pdf',
+      );
+    });
+
+    test('antes de guardar dice cuál le tocará; una venta de antes del '
+        'inventario sigue siendo boleta interna', () {
+      final ahora = DateTime(2026, 10, 4);
+      Movimiento venta({
+        int numero = 0,
+        int? boleta,
+        String? documento,
+        bool exportacion = false,
+      }) => Movimiento(
+        id: 'v$numero',
+        numero: numero,
+        tipo: Tipo.entro,
+        centavos: 11800,
+        categoriaId: 'ventas',
+        concepto: '',
+        medio: MedioPago.transferencia,
+        fecha: ahora,
+        creadoEn: ahora,
+        actualizadoEn: ahora,
+        igvCentavos: 1800,
+        numeroBoleta: boleta,
+        documentoContraparte: documento,
+        exportacion: exportacion,
+        sync: EstadoSync.local,
+      );
+
+      final previa = Boleta(
+        negocio: Negocio.vacio,
+        movimiento: venta(documento: '20304050811'),
+      );
+      expect(previa.numerado, isFalse);
+      expect(previa.titulo, 'FACTURA ELECTRÓNICA');
+      final hoja = Documentos.boleta(previa);
+      final encabezado = hoja.bloques.whereType<EncabezadoDoc>().single;
+      expect(encabezado.numero, 'F001 · N° al guardar');
+      expect(
+        Boleta(
+          negocio: Negocio.vacio,
+          movimiento: venta(exportacion: true),
+        ).esFactura,
+        isTrue,
+      );
+
+      final antigua = Boleta(
+        negocio: Negocio.vacio,
+        movimiento: venta(numero: 5, boleta: 12),
+      );
+      expect(antigua.deControlInterno, isTrue);
+      expect(antigua.titulo, 'BOLETA DE VENTA');
+      expect(antigua.subtitulo, 'DE CONTROL INTERNO');
+      expect(antigua.numero, 'B001-00000012');
+    });
+
+    test(
+      'lleva los productos con su unidad, descuento y valor de venta',
+      () async {
+        final hoy = DateTime(2026, 10, 4);
+        final m = Movimiento(
+          id: 'exp',
+          numero: 3,
+          tipo: Tipo.entro,
+          centavos: 80000,
+          categoriaId: 'ventas',
+          concepto: '',
+          medio: MedioPago.transferencia,
+          fecha: hoy,
+          creadoEn: hoy,
+          actualizadoEn: hoy,
+          contraparte: 'Mujica Cía.',
+          documentoContraparte: '20304050811',
+          numeroBoleta: 3,
+          docTipo: '01',
+          docSerie: 'F001',
+          docNumero: '7',
+          exportacion: true,
+          sync: EstadoSync.local,
+        );
+        final ponchos = Mercaderia(
+          id: 'p',
+          nombre: 'Ponchos',
+          codigo: 'POSA 001',
+          creadoEn: hoy,
+        );
+        final azucar = Mercaderia(
+          id: 'a',
+          nombre: 'Azúcar',
+          codigo: 'P002',
+          unidad: '01',
+          creadoEn: hoy,
+        );
+        final items = ItemComprobante.de([
+          LineaAlmacen(
+            id: 'l1',
+            mercaderiaId: 'p',
+            fecha: hoy,
+            numero: 1,
+            operacion: OperacionAlmacen.venta,
+            entrada: false,
+            cantidad: Cantidad.de(10),
+            importe: 75000,
+            descuento: 5000,
+          ),
+          LineaAlmacen(
+            id: 'l2',
+            mercaderiaId: 'a',
+            fecha: hoy,
+            numero: 2,
+            operacion: OperacionAlmacen.venta,
+            entrada: false,
+            cantidad: Cantidad.de(3),
+            importe: 5000,
+          ),
+        ], (id) => id == 'p' ? ponchos : azucar);
+        expect(items.map((i) => i.unidad), ['NIU', 'KGM']);
+
+        final boleta = Boleta(
+          negocio: Negocio.vacio,
+          movimiento: m,
+          items: items,
+        );
+        expect(boleta.numero, 'F001-00000007');
+        expect(boleta.descuentos, 5000);
+        expect(boleta.rotuloBase, 'EXPORTACIÓN');
+
+        final hoja = Documentos.boleta(boleta);
+        final tabla = hoja.bloques.whereType<TablaDoc>().single;
+        expect(tabla.filas, [
+          ['10', 'NIU', 'POSA 001 · Ponchos', '80.00', '50.00', '750.00'],
+          ['3', 'KGM', 'P002 · Azúcar', '16.6667', '', '50.00'],
+        ]);
+        final totales = hoja.bloques.whereType<SonTotalesDoc>().single.totales;
+        expect(totales, [
+          ('DESCUENTOS (S/)', '50.00'),
+          ('EXPORTACIÓN (S/)', '800.00'),
+          ('IGV 18% (S/)', '0.00'),
+          ('IMPORTE TOTAL (S/)', '800.00'),
+        ]);
+        expect(hoja.bloques.whereType<CeldasDoc>().single.items.last, (
+          'OPERACIÓN',
+          'EXPORTACIÓN',
+        ));
+        expect(
+          hoja.bloques.whereType<PieDoc>().single.texto,
+          contains('Representación impresa de la factura electrónica'),
+        );
+        final pdf = await ExportadorPdf.boleta(boleta);
+        expect(ascii.decode(pdf.sublist(0, 5)), '%PDF-');
+      },
+    );
   });
 
   group('Recibo interno', () {

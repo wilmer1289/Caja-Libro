@@ -1,3 +1,21 @@
+/// Cómo se valúa el inventario. SUNAT no deja cambiarlo sin autorización
+/// (artículo 62 de la Ley del Impuesto a la Renta), así que se elige una vez.
+/// Por ahora la app sólo trabaja con promedio ponderado.
+enum MetodoValuacion {
+  promedio('Promedio ponderado');
+
+  const MetodoValuacion(this.etiqueta);
+  final String etiqueta;
+
+  /// Lo que no se reconoce, o una base de antes de la v9, es promedio.
+  static MetodoValuacion desdeBd(String? nombre) {
+    for (final m in values) {
+      if (m.name == nombre) return m;
+    }
+    return promedio;
+  }
+}
+
 /// Los datos del negocio y los saldos con que abre el libro.
 ///
 /// Son los de la hoja DATOS del Excel, más los del encabezado de los formatos
@@ -21,6 +39,8 @@ class Negocio {
     this.saldoInicialBanco = 0,
     this.inicioPeriodo,
     this.tesorero = '',
+    this.metodoValuacion = MetodoValuacion.promedio,
+    this.kardexDesde,
   });
 
   /// "LIBERTAD SA", o el nombre de la bodega.
@@ -45,6 +65,13 @@ class Negocio {
   /// Quién está a cargo de la caja: sale en cada recibo y en el acta de
   /// arqueo. Es el valor de arranque; en cada recibo se puede cambiar.
   final String tesorero;
+
+  /// El método del kardex. Sale en el encabezado del Formato 13.1.
+  final MetodoValuacion metodoValuacion;
+
+  /// El día del primer inventario inicial: desde ahí corre el kardex. Null
+  /// mientras no se puso ninguno.
+  final DateTime? kardexDesde;
 
   static const vacio = Negocio();
 
@@ -73,6 +100,8 @@ class Negocio {
     int? saldoInicialBanco,
     DateTime? inicioPeriodo,
     String? tesorero,
+    MetodoValuacion? metodoValuacion,
+    DateTime? kardexDesde,
   }) {
     return Negocio(
       razonSocial: razonSocial ?? this.razonSocial,
@@ -84,6 +113,8 @@ class Negocio {
       saldoInicialBanco: saldoInicialBanco ?? this.saldoInicialBanco,
       inicioPeriodo: inicioPeriodo ?? this.inicioPeriodo,
       tesorero: tesorero ?? this.tesorero,
+      metodoValuacion: metodoValuacion ?? this.metodoValuacion,
+      kardexDesde: kardexDesde ?? this.kardexDesde,
     );
   }
 
@@ -98,6 +129,8 @@ class Negocio {
     'saldo_inicial_banco': saldoInicialBanco,
     'inicio_periodo': inicioPeriodo?.millisecondsSinceEpoch,
     'tesorero': tesorero,
+    'metodo_valuacion': metodoValuacion.name,
+    'kardex_desde': kardexDesde?.millisecondsSinceEpoch,
   };
 
   factory Negocio.desdeMapa(Map<String, Object?> m) => Negocio(
@@ -112,5 +145,9 @@ class Negocio {
         ? null
         : DateTime.fromMillisecondsSinceEpoch(m['inicio_periodo']! as int),
     tesorero: (m['tesorero'] as String?) ?? '',
+    metodoValuacion: MetodoValuacion.desdeBd(m['metodo_valuacion'] as String?),
+    kardexDesde: m['kardex_desde'] == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(m['kardex_desde']! as int),
   );
 }

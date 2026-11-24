@@ -1,3 +1,4 @@
+import 'almacen.dart';
 import 'banco.dart';
 import 'categoria.dart';
 import 'efectivo.dart';
@@ -37,6 +38,13 @@ class Movimiento {
     this.mercaderiaId,
     this.mercaderiaNombre,
     this.costoCentavos,
+    this.docTipo,
+    this.docSerie,
+    this.docNumero,
+    this.exportacion = false,
+    this.registradoPor,
+    this.anuladoEn,
+    this.reemplazadoPor,
     this.rutaFoto,
     this.eliminadoEn,
     this.sync = EstadoSync.guardando,
@@ -119,8 +127,32 @@ class Movimiento {
   /// Copia histórica: cambiar el catálogo no modifica los comprobantes emitidos.
   final String? mercaderiaNombre;
 
-  /// null: desconocido; 0 sin tipo: servicio; positivo: costo vendido sin IGV.
+  /// null: desconocido o venta con líneas (el costo se lee del kardex);
+  /// 0 sin tipo: servicio; positivo: costo legado de una venta sin líneas.
   final int? costoCentavos;
+
+  /// El comprobante de la operación, con su tipo de la Tabla 10. En una
+  /// compra, la factura del proveedor (null si no se anotó). En una venta o
+  /// un adelanto, el tipo y correlativo de comprobante que la app asigna
+  /// automáticamente (01, F001; o 03, B001). La asignación local no implica
+  /// transmisión ni autorización del documento ante SUNAT.
+  final String? docTipo;
+  final String? docSerie;
+  final String? docNumero;
+
+  /// Una venta al exterior: no lleva IGV y su costo va a 69111.
+  final bool exportacion;
+
+  /// Quién la anotó: el usuario que había entrado a la app.
+  final String? registradoPor;
+
+  /// Cuándo se anuló. Un movimiento anulado no cuenta en nada —ni en la
+  /// caja, ni en los libros, ni en el kardex—, pero queda a la vista con su
+  /// número: así se ve que hubo un error y cómo se corrigió.
+  final DateTime? anuladoEn;
+
+  /// El movimiento que se registró en su lugar.
+  final String? reemplazadoPor;
 
   /// El voucher del banco: la foto, la captura o el PDF que prueba la
   /// operación. Es el nombre del archivo dentro del almacén de evidencias, no
@@ -135,6 +167,7 @@ class Movimiento {
   final EstadoSync sync;
 
   bool get eliminado => eliminadoEn != null;
+  bool get anulado => anuladoEn != null;
   double get monto => centavos / 100;
   Cuenta get cuenta => medio.cuenta;
   Categoria get categoria => Categoria.porId(categoriaId);
@@ -142,6 +175,12 @@ class Movimiento {
   /// El valor de venta, sin impuesto.
   int get baseCentavos => centavos - igvCentavos;
   bool get tieneIgv => igvCentavos > 0;
+
+  /// Una operación que normalmente lleva IGV y se registró sin él, como la
+  /// compra a un proveedor que no lo cobra.
+  bool get sinIgv => !exportacion && igvCentavos == 0 && categoria.afectoIgv;
+
+  Comprobante? get comprobante => Comprobante.de(docTipo, docSerie, docNumero);
 
   bool get enBanco => medio.cuenta == Cuenta.banco;
   bool get tieneVoucher => (rutaFoto ?? '').trim().isNotEmpty;
@@ -240,8 +279,14 @@ class Movimiento {
     Object? mercaderiaId = _sinCambio,
     Object? mercaderiaNombre = _sinCambio,
     Object? costoCentavos = _sinCambio,
+    Object? comprobante = _sinCambio,
+    Object? anuladoEn = _sinCambio,
+    Object? reemplazadoPor = _sinCambio,
     EstadoSync? sync,
   }) {
+    final doc = identical(comprobante, _sinCambio)
+        ? this.comprobante
+        : comprobante as Comprobante?;
     return Movimiento(
       id: id,
       numero: numero,
@@ -275,6 +320,17 @@ class Movimiento {
       costoCentavos: identical(costoCentavos, _sinCambio)
           ? this.costoCentavos
           : costoCentavos as int?,
+      docTipo: doc?.tipo,
+      docSerie: doc?.serie,
+      docNumero: doc?.numero,
+      exportacion: exportacion,
+      registradoPor: registradoPor,
+      anuladoEn: identical(anuladoEn, _sinCambio)
+          ? this.anuladoEn
+          : anuladoEn as DateTime?,
+      reemplazadoPor: identical(reemplazadoPor, _sinCambio)
+          ? this.reemplazadoPor
+          : reemplazadoPor as String?,
       rutaFoto: rutaFoto ?? this.rutaFoto,
       eliminadoEn: identical(eliminadoEn, _sinCambio)
           ? this.eliminadoEn
@@ -311,6 +367,13 @@ class Movimiento {
     'mercaderia_id': mercaderiaId,
     'mercaderia_nombre': mercaderiaNombre,
     'costo_centavos': costoCentavos,
+    'doc_tipo': docTipo,
+    'doc_serie': docSerie,
+    'doc_numero': docNumero,
+    'exportacion': exportacion ? 1 : 0,
+    'registrado_por': registradoPor,
+    'anulado_en': anuladoEn?.millisecondsSinceEpoch,
+    'reemplazado_por': reemplazadoPor,
     'ruta_foto': rutaFoto,
     'eliminado_en': eliminadoEn?.millisecondsSinceEpoch,
     'sync': sync.name,
@@ -348,6 +411,13 @@ class Movimiento {
       mercaderiaId: m['mercaderia_id'] as String?,
       mercaderiaNombre: m['mercaderia_nombre'] as String?,
       costoCentavos: m['costo_centavos'] as int?,
+      docTipo: m['doc_tipo'] as String?,
+      docSerie: m['doc_serie'] as String?,
+      docNumero: m['doc_numero'] as String?,
+      exportacion: m['exportacion'] == 1,
+      registradoPor: m['registrado_por'] as String?,
+      anuladoEn: m['anulado_en'] == null ? null : fecha(m['anulado_en']),
+      reemplazadoPor: m['reemplazado_por'] as String?,
       rutaFoto: m['ruta_foto'] as String?,
       eliminadoEn: m['eliminado_en'] == null ? null : fecha(m['eliminado_en']),
       sync: EstadoSync.desdeBd(m['sync']! as String),

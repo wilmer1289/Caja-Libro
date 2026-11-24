@@ -58,3 +58,10 @@ app.*.map.json
 
 # Lo que deja el compilador de Kotlin al armar el APK.
 /android/.kotlin/
+
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+*.pdb
+
+*.zip

@@ -91,6 +91,13 @@ class ReglasAsiento {
   static const mercaderias = '20111';
   static const variacionDeInventarios = '6111';
 
+  /// Merma y desmedro: gastos por deterioro de inventarios, mercaderías.
+  static const deterioroDeMercaderias = '6951';
+
+  /// Faltante y sobrante de un conteo físico.
+  static const otrosGastosDeGestion = '6593';
+  static const otrosIngresosDeGestion = '7599';
+
   static const porPagarComercial = '4212';
 
   /// La deuda de los servicios. En los ejemplos, alquiler y luz van en 46 y
@@ -191,10 +198,12 @@ class ReglasAsiento {
           return ReglaAsiento(
             esquema: Esquema.venta,
             contrapartida: cuenta,
-            resultado: ReglasCuenta.ventaSegun(
-              m.vinculo,
-              categoria.cuentaResultado ?? ventas,
-            ),
+            resultado: m.exportacion
+                ? (m.vinculo.relacionada ? '70112' : '70111')
+                : ReglasCuenta.ventaSegun(
+                    m.vinculo,
+                    categoria.cuentaResultado ?? ventas,
+                  ),
             delExcel: true,
           );
         case 'cobros_fiado':

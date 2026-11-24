@@ -34,4 +34,18 @@ class MercaderiaDao {
     final db = await _db;
     await db.insert(Esquema.tablaMercaderias, mercaderia.aMapa());
   }
+
+  /// Cambia los datos de un producto. El id y la fecha de creación no se
+  /// tocan.
+  Future<void> actualizar(Mercaderia mercaderia) async {
+    final db = await _db;
+    await db.update(
+      Esquema.tablaMercaderias,
+      mercaderia.aMapa()
+        ..remove('id')
+        ..remove('creado_en'),
+      where: 'id = ?',
+      whereArgs: [mercaderia.id],
+    );
+  }
 }

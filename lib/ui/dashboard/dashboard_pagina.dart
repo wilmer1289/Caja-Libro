@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 import '../../core/formato.dart';
 import '../../core/tema.dart';
 import '../../dominio/enums.dart';
+import '../../dominio/almacen.dart';
+import '../../dominio/kardex.dart';
 import '../../dominio/jornada.dart';
 import '../../dominio/mayor.dart';
 import '../../dominio/movimiento.dart';
@@ -14,6 +16,7 @@ import '../../dominio/resumen.dart';
 import '../../dominio/series.dart';
 import '../../estado/estado_caja.dart';
 import '../historial/acciones_movimiento.dart';
+import '../inventario/inventario_ventana.dart';
 import '../login/personajes.dart';
 import '../negocio/negocio_pagina.dart';
 import '../registro/registro_hoja.dart';
@@ -41,6 +44,7 @@ class DashboardPagina extends StatelessWidget {
 
     if (estado.cargando) return const _Cargando();
     if (estado.vacio &&
+        estado.productos.isEmpty &&
         estado.negocio.saldoInicialCaja == 0 &&
         estado.negocio.saldoInicialBanco == 0) {
       return _Bienvenida(onIrA: onIrA);
@@ -74,6 +78,14 @@ class DashboardPagina extends StatelessWidget {
             Aparece(
               retraso: const Duration(milliseconds: 40),
               child: _Indicadores(resumen: resumen, amplio: amplio),
+            ),
+            SizedBox(height: separacion),
+            Aparece(
+              retraso: const Duration(milliseconds: 60),
+              child: _TarjetaProductosPorReponer(
+                alertas: estado.alertasInventario,
+                onTap: () => InventarioVentana.abrir(context),
+              ),
             ),
             SizedBox(height: separacion),
             Aparece(
@@ -119,6 +131,91 @@ class DashboardPagina extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+class _TarjetaProductosPorReponer extends StatelessWidget {
+  const _TarjetaProductosPorReponer({
+    required this.alertas,
+    required this.onTap,
+  });
+
+  final List<AlertaStock> alertas;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final hayAlertas = alertas.isNotEmpty;
+    return Material(
+      color: Tokens.superficie,
+      borderRadius: BorderRadius.circular(Tokens.radioGrande),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Tokens.radioGrande),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(Tokens.radioGrande),
+            border: Border.all(color: Tokens.borde),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: (hayAlertas ? Tokens.salio : Tokens.entro)
+                      .withValues(alpha: .10),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(
+                  hayAlertas
+                      ? Icons.warning_amber_rounded
+                      : Icons.inventory_2_outlined,
+                  color: hayAlertas ? Tokens.salio : Tokens.entro,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Productos por reponer · ${alertas.length}',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: Tokens.texto,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      hayAlertas
+                          ? alertas
+                              .take(3)
+                              .map(
+                                (a) =>
+                                    '${a.producto.nombre}: ${Cantidad.texto(a.cantidad)} ${a.producto.abreviaturaUnidad}',
+                              )
+                              .join(' · ')
+                          : 'No hay productos por debajo de su stock mínimo.',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: Tokens.texto2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right_rounded, color: Tokens.texto2),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

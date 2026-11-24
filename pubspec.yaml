@@ -48,6 +48,8 @@ dependencies:
   printing: ^5.15.1
   image_picker: ^1.2.4
   file_selector: ^1.1.0
+  archive: ^4.3.0
+  xml: ^7.0.1
   google_mlkit_text_recognition: ^0.17.1
 
 # Se fija la versión de un paquete que la app no nombra, pero que le llega a

@@ -23,6 +23,8 @@ class BarraLateral extends StatelessWidget {
     required this.resumen,
     this.plegada = false,
     this.enMenu = false,
+    this.onInventario,
+    this.alertasInventario = 0,
   });
 
   final int seleccionada;
@@ -33,6 +35,10 @@ class BarraLateral extends StatelessWidget {
   /// Dentro del menú que sale por la derecha en el celular: ocupa todo el
   /// ancho del menú, sin sombra propia, y deja lugar a la barra de estado.
   final bool enMenu;
+
+  /// La entrada de Inventario sólo aparece arriba del menú lateral móvil.
+  final VoidCallback? onInventario;
+  final int alertasInventario;
 
   /// Ancho del menú del celular.
   static const anchoMenu = 290.0;
@@ -129,6 +135,11 @@ class BarraLateral extends StatelessWidget {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
+                                if (enMenu && onInventario != null)
+                                  _OpcionInventario(
+                                    alertas: alertasInventario,
+                                    onTap: onInventario!,
+                                  ),
                                 for (var i = 0; i < Seccion.todas.length; i++)
                                   _Opcion(
                                     seccion: Seccion.todas[i],
@@ -213,6 +224,76 @@ class _BotonPlegarState extends State<BotonPlegar> {
                 Icons.chevron_left_rounded,
                 size: 18,
                 color: _encima ? Colors.white : Tokens.texto,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OpcionInventario extends StatelessWidget {
+  const _OpcionInventario({
+    required this.alertas,
+    required this.onTap,
+  });
+
+  final int alertas;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.white.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(Tokens.radio),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Tokens.radio),
+          onTap: onTap,
+          child: SizedBox(
+            height: 50,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.inventory_2_outlined,
+                    size: 21,
+                    color: Tokens.marca,
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Text(
+                      'Inventario',
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  if (alertas > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Tokens.salio,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        alertas > 99 ? '99+' : '$alertas',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ),

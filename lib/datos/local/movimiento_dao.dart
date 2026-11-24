@@ -1,5 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 
+import '../../dominio/almacen.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/movimiento.dart';
 import '../db/base_datos.dart';
@@ -17,11 +18,22 @@ class MovimientoDao {
   /// El correlativo y la inserción comparten una transacción SQLite: dos
   /// registros al mismo tiempo nunca se llevan el mismo número de operación,
   /// de recibo ni de boleta.
+  ///
+  /// Con `numerarComprobante`, el movimiento trae el tipo y la serie del
+  /// comprobante asignado (F001, B001) y aquí recibe el número siguiente de
+  /// esa serie. La emisión oficial ante SUNAT es responsabilidad del
+  /// proveedor electrónico integrado.
+  ///
+  /// `despues` corre dentro de la misma transacción, con el movimiento ya
+  /// numerado: ahí se guardan sus líneas del almacén y, al corregir, se anula
+  /// el original. Si falla, no queda guardado ni el movimiento.
   Future<Movimiento> insertarNumerado(
     Tipo tipo,
     bool conRecibo,
     Movimiento Function(int numero, int? recibo, int? boleta) construir, {
     bool conBoleta = false,
+    bool numerarComprobante = false,
+    Future<void> Function(Transaction txn, Movimiento movimiento)? despues,
   }) async {
     final db = await _db;
     return db.transaction((txn) async {
@@ -45,14 +57,61 @@ class MovimientoDao {
         );
         boleta = ((boletas.first['tope'] as int?) ?? 0) + 1;
       }
-      final movimiento = construir(numero, recibo, boleta);
+      var movimiento = construir(numero, recibo, boleta);
+      final doc = movimiento.comprobante;
+      if (numerarComprobante && doc != null) {
+        final siguiente = await siguienteComprobante(txn, doc.tipo, doc.serie);
+        movimiento = movimiento.copiarCon(
+          comprobante: Comprobante(
+            tipo: doc.tipo,
+            serie: doc.serie,
+            numero: '$siguiente',
+          ),
+        );
+      }
       await txn.insert(
         Esquema.tablaMovimientos,
         movimiento.aMapa(),
         conflictAlgorithm: ConflictAlgorithm.abort,
       );
+      if (despues != null) await despues(txn, movimiento);
       return movimiento;
     });
+  }
+
+  /// El siguiente número de una serie que emite la app. Cuenta también lo
+  /// borrado y lo anulado: un número de comprobante no se vuelve a usar.
+  /// Sólo mira lo que entró (ventas y adelantos): una compra también puede
+  /// traer una F001, pero es la serie de su proveedor.
+  static Future<int> siguienteComprobante(
+    DatabaseExecutor ejecutor,
+    String tipoDoc,
+    String serie,
+  ) async {
+    final r = await ejecutor.rawQuery(
+      'SELECT MAX(CAST(doc_numero AS INTEGER)) AS tope '
+      'FROM ${Esquema.tablaMovimientos} '
+      'WHERE tipo = ? AND doc_tipo = ? AND doc_serie = ?',
+      [Tipo.entro.name, tipoDoc, serie],
+    );
+    return ((r.first['tope'] as int?) ?? 0) + 1;
+  }
+
+  /// Marca el original como anulado, dentro de la transacción que guarda el
+  /// que lo reemplaza. Falla si otro ya lo había anulado.
+  static Future<void> anularEn(
+    DatabaseExecutor ejecutor,
+    Movimiento anulado,
+  ) async {
+    final cambiadas = await ejecutor.update(
+      Esquema.tablaMovimientos,
+      anulado.aMapa(),
+      where: 'id = ? AND anulado_en IS NULL',
+      whereArgs: [anulado.id],
+    );
+    if (cambiadas != 1) {
+      throw ArgumentError('Ese movimiento ya se había anulado.');
+    }
   }
 
   /// Le da recibo a un movimiento que se guardó sin él. El número sale del
@@ -87,14 +146,19 @@ class MovimientoDao {
   }
 
   /// Por defecto no devuelve los borrados: el borrado lógico existe para la
-  /// sincronización, no para que el usuario vea filas fantasma.
+  /// sincronización, no para que el usuario vea filas fantasma. Tampoco los
+  /// anulados, que no cuentan en nada: esos se piden aparte
+  /// (`soloAnulados`), para mostrarlos.
   Future<List<Movimiento>> listar({
     Cuenta? cuenta,
     bool incluirEliminados = false,
+    bool soloAnulados = false,
   }) async {
     final db = await _db;
 
-    final condiciones = <String>[];
+    final condiciones = <String>[
+      soloAnulados ? 'anulado_en IS NOT NULL' : 'anulado_en IS NULL',
+    ];
     final args = <Object?>[];
 
     if (!incluirEliminados) condiciones.add('eliminado_en IS NULL');
@@ -105,7 +169,7 @@ class MovimientoDao {
 
     final filas = await db.query(
       Esquema.tablaMovimientos,
-      where: condiciones.isEmpty ? null : condiciones.join(' AND '),
+      where: condiciones.join(' AND '),
       whereArgs: args.isEmpty ? null : args,
       orderBy: 'fecha DESC, creado_en DESC',
     );

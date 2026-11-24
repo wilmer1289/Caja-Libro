@@ -226,9 +226,8 @@ class ComprobantesRegistro extends StatelessWidget {
           nota(
             Icons.shopping_bag_outlined,
             exigeCliente
-                ? 'Boleta de venta: se genera sola. Desde S/ 700 lleva nombre '
-                      'y DNI o RUC del cliente.'
-                : 'Boleta de venta: se genera sola al guardar.',
+                ? 'El comprobante se asigna según el DNI o RUC. Desde S/ 700 requiere nombre y documento del cliente.'
+                : 'El tipo y la serie del comprobante se asignan automáticamente según el documento del cliente.',
           ),
         ],
       ],

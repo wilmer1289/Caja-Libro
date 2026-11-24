@@ -1,17 +1,16 @@
 import 'package:uuid/uuid.dart';
 
-import '../../dominio/banco.dart';
-import '../../dominio/boleta.dart';
+import '../../dominio/almacen.dart';
 import '../../dominio/categoria.dart';
+import '../../dominio/cierre_mes.dart';
 import '../../dominio/efectivo.dart';
 import '../../dominio/enums.dart';
 import '../../dominio/fondo.dart';
-import '../../dominio/igv.dart';
 import '../../dominio/importe.dart';
 import '../../dominio/jornada.dart';
+import '../../dominio/mercaderia.dart';
 import '../../dominio/movimiento.dart';
 import '../../dominio/negocio.dart';
-import '../../dominio/mercaderia.dart';
 import '../../dominio/reglas_mercaderia.dart';
 import 'repositorio_movimientos.dart';
 
@@ -21,15 +20,15 @@ import 'repositorio_movimientos.dart';
 ///
 /// Todo vive en listas en memoria que arrancan vacías, como el primer día de
 /// un negocio que recién empieza: sin datos del negocio, sin movimientos, sin
-/// cajas y con el efectivo sin contar. Sirve para que alguien pruebe la app
-/// desde un link sin instalar nada, y para que Wilmer muestre el avance sin
-/// exponer su base real. Al recargar la página se vuelve a empezar de cero:
-/// nada de lo que se escriba acá queda guardado en ningún lado.
+/// cajas, sin productos y con el efectivo sin contar. Sirve para que alguien
+/// pruebe la app desde un link sin instalar nada, y para que Wilmer muestre
+/// el avance sin exponer su base real. Al recargar la página se vuelve a
+/// empezar de cero: nada de lo que se escriba acá queda guardado en ningún
+/// lado.
 ///
-/// Reimplementa cada método de [RepositorioMovimientos] contra las listas de
-/// abajo, con las mismas reglas del repositorio de verdad (bancarización,
-/// boleta desde S/ 700, numeración sin huecos): el objetivo es que la
-/// demostración se comporte igual que la app real, no una versión recortada.
+/// Las reglas (bancarización, boleta desde S/ 700, stock, meses cerrados…)
+/// son las de [RepositorioMovimientos]: aquí sólo se reemplaza dónde se
+/// guarda, para que la demostración se comporte igual que la app real.
 class RepositorioDemo extends RepositorioMovimientos {
   RepositorioDemo() : super();
 
@@ -41,6 +40,10 @@ class RepositorioDemo extends RepositorioMovimientos {
   final List<Jornada> _cajas = [];
   FondoNegocio? _fondo;
   final List<Mercaderia> _mercaderias = [];
+  final List<LineaAlmacen> _lineas = [];
+  final List<CierreMes> _cierres = [];
+
+  // --- Productos ---
 
   @override
   Future<List<Mercaderia>> leerMercaderias() async => List.of(_mercaderias)
@@ -55,20 +58,72 @@ class RepositorioDemo extends RepositorioMovimientos {
   }
 
   @override
-  Future<Mercaderia> agregarMercaderia(String nombre) async {
-    final limpio = ReglasMercaderia.validarNombre(nombre);
-    if (_mercaderias.any(
-      (m) => Mercaderia.claveDe(m.nombre) == Mercaderia.claveDe(limpio),
-    )) {
-      throw ArgumentError('Ya existe una mercadería con ese nombre.');
-    }
-    final nueva = Mercaderia(
-      id: _uuid.v4(),
-      nombre: limpio,
-      creadoEn: DateTime.now(),
+  Future<void> insertarProducto(Mercaderia producto) async {
+    // La misma barrera que el índice único de SQLite.
+    ReglasMercaderia.validarProducto(producto, otros: _mercaderias);
+    _mercaderias.add(producto);
+  }
+
+  @override
+  Future<void> actualizarProducto(Mercaderia producto) async {
+    final i = _mercaderias.indexWhere((m) => m.id == producto.id);
+    if (i == -1) throw ArgumentError('El producto no existe.');
+    _mercaderias[i] = producto;
+  }
+
+  // --- Almacén ---
+
+  int get _proximoNumeroAlmacen =>
+      _lineas.fold(0, (t, l) => l.numero > t ? l.numero : t) + 1;
+
+  @override
+  Future<List<LineaAlmacen>> leerLineasAlmacen() async {
+    final vigentes = {
+      for (final m in _movimientos)
+        if (!m.eliminado && !m.anulado) m.id,
+    };
+    return StockAlmacen.ordenadas(
+      _lineas.where(
+        (l) => l.movimientoId == null || vigentes.contains(l.movimientoId),
+      ),
     );
-    _mercaderias.add(nueva);
-    return nueva;
+  }
+
+  @override
+  Future<List<LineaAlmacen>> lineasDeMovimiento(String movimientoId) async {
+    final anulado = _movimientos.any((m) => m.id == movimientoId && m.anulado);
+    return [
+      for (final l in _lineas)
+        if (l.movimientoId == movimientoId)
+          anulado ? LineasAlmacen.anulada(l) : l,
+    ];
+  }
+
+  @override
+  Future<bool> productoConMovimientos(String mercaderiaId) async =>
+      _lineas.any((l) => l.mercaderiaId == mercaderiaId);
+
+  @override
+  Future<LineaAlmacen> insertarLineaSuelta(
+    LineaAlmacen Function(int numero) construir, {
+    required DateTime creadoEn,
+  }) async {
+    final linea = construir(_proximoNumeroAlmacen);
+    _lineas.add(linea);
+    return linea;
+  }
+
+  // --- Meses cerrados ---
+
+  @override
+  Future<List<CierreMes>> leerCierres() async => List.of(_cierres);
+
+  @override
+  Future<void> insertarCierre(CierreMes cierre) async {
+    if (_cierres.any((c) => c.clave == cierre.clave)) {
+      throw ArgumentError('Ese mes ya está cerrado.');
+    }
+    _cierres.add(cierre);
   }
 
   // --- Negocio ---
@@ -123,8 +178,23 @@ class RepositorioDemo extends RepositorioMovimientos {
   @override
   Future<List<Movimiento>> listar({Cuenta? cuenta}) async => [
     for (final m in _movimientos)
-      if (!m.eliminado && (cuenta == null || m.cuenta == cuenta)) m,
+      if (!m.eliminado && !m.anulado && (cuenta == null || m.cuenta == cuenta))
+        m,
   ]..sort((a, b) => b.fecha.compareTo(a.fecha));
+
+  @override
+  Future<List<Movimiento>> listarAnulados() async => [
+    for (final m in _movimientos)
+      if (m.anulado && !m.eliminado) m,
+  ]..sort((a, b) => b.fecha.compareTo(a.fecha));
+
+  @override
+  Future<Movimiento?> movimientoPorId(String id) async {
+    for (final m in _movimientos) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
 
   int get _proximoNumero =>
       _movimientos.fold(0, (t, m) => m.numero > t ? m.numero : t) + 1;
@@ -142,120 +212,61 @@ class RepositorioDemo extends RepositorioMovimientos {
       ) +
       1;
 
+  /// Igual que en SQLite: cuenta también lo borrado y lo anulado.
+  int _siguienteComprobante(String tipoDoc, String serie) =>
+      _movimientos
+          .where(
+            (m) =>
+                m.tipo == Tipo.entro &&
+                m.docTipo == tipoDoc &&
+                m.docSerie == serie,
+          )
+          .fold(0, (t, m) {
+            final n = int.tryParse(m.docNumero ?? '') ?? 0;
+            return n > t ? n : t;
+          }) +
+      1;
+
   @override
-  Future<Movimiento> registrar({
-    required Tipo tipo,
-    required int centavos,
-    required String categoriaId,
-    required String concepto,
-    required MedioPago medio,
-    required DateTime fecha,
-    String? contraparte,
-    String? documentoContraparte,
-    String? numeroTransaccion,
-    String? bancoTercero,
-    Vinculo vinculo = Vinculo.tercero,
-    DocumentoPago documentoPago = DocumentoPago.factura,
-    Situacion situacion = Situacion.cartera,
-    String? cuentaAsociada,
-    bool? conIgv,
-    String? rutaFoto,
-    bool conRecibo = false,
-    String? tesorero,
-    DetalleEfectivo? detalleEfectivo,
-    String? mercaderiaId,
-    int? costoCentavos,
-  }) async {
-    final ahora = DateTime.now();
-    final categoria = Categoria.porId(categoriaId);
-    if (centavos <= 0 || centavos > Importe.maximoCentavos) {
-      throw ArgumentError(
-        'El monto debe ser mayor que cero y estar dentro del límite.',
-      );
-    }
-    if (categoria.id != categoriaId || categoria.tipo != tipo) {
-      throw ArgumentError('La categoría no corresponde al movimiento.');
-    }
-    if (medio == MedioPago.efectivo &&
-        centavos >= Movimiento.umbralBancarizacionCentavos) {
-      throw ArgumentError(
-        'Desde S/ 2,000 no se puede registrar en efectivo: usa banco, Yape, '
-        'transferencia, depósito o tarjeta.',
-      );
-    }
-    final conBoleta = Boleta.corresponde(categoria);
-    if (conBoleta &&
-        Boleta.exigeCliente(centavos) &&
-        ((contraparte ?? '').trim().isEmpty ||
-            (documentoContraparte ?? '').trim().isEmpty)) {
-      throw ArgumentError(
-        'Desde S/ 700 la boleta lleva el nombre y el DNI o RUC del cliente.',
-      );
-    }
-    if (detalleEfectivo != null &&
-        (medio != MedioPago.efectivo || !detalleEfectivo.cuadraCon(centavos))) {
-      throw ArgumentError(
-        'Los billetes y el vuelto no cuadran con el monto del movimiento.',
-      );
-    }
-    if (!fecha.isBefore(DateTime(ahora.year, ahora.month, ahora.day + 1))) {
-      throw ArgumentError('No se pueden registrar movimientos futuros.');
-    }
-    if (_negocio.inicioPeriodo != null &&
-        fecha.isBefore(_negocio.inicioPeriodo!)) {
-      throw ArgumentError('La fecha es anterior a la apertura del negocio.');
-    }
-
-    final mercaderia = await validarDatosMercaderia(
-      categoriaId: categoriaId,
-      mercaderiaId: mercaderiaId,
-      costoCentavos: costoCentavos,
+  Future<Movimiento> guardarNuevo(MovimientoPorGuardar listo) async {
+    var nuevo = listo.construir(
+      _proximoNumero,
+      listo.conRecibo ? _proximoRecibo(listo.tipo) : null,
+      listo.conBoleta ? _proximaBoleta : null,
     );
-    final afecto = conIgv ?? categoria.afectoIgv;
-    final igv = afecto ? Igv.desagregar(centavos).igv : 0;
-
-    final nuevo = Movimiento(
-      id: _uuid.v4(),
-      numero: _proximoNumero,
-      tipo: tipo,
-      centavos: centavos,
-      categoriaId: categoriaId,
-      concepto: concepto,
-      medio: medio,
-      fecha: fecha,
-      creadoEn: ahora,
-      actualizadoEn: ahora,
-      // La cuenta elegida a mano manda; si no, la arma la regla del
-      // vínculo y el documento, como en el Excel.
-      cuentaAsociada:
-          cuentaAsociada ??
-          ReglasCuenta.para(
-            categoria,
-            vinculo: vinculo,
-            documento: documentoPago,
-            situacion: situacion,
-          ),
-      igvCentavos: igv,
-      contraparte: contraparte,
-      documentoContraparte: documentoContraparte,
-      numeroTransaccion: numeroTransaccion,
-      bancoTercero: bancoTercero,
-      vinculo: vinculo,
-      documentoPago: documentoPago,
-      situacion: situacion,
-      numeroRecibo: conRecibo ? _proximoRecibo(tipo) : null,
-      numeroBoleta: conBoleta ? _proximaBoleta : null,
-      tesorero: conRecibo ? tesorero?.trim() : null,
-      detalleEfectivo: detalleEfectivo,
-      mercaderiaId: mercaderia?.id,
-      mercaderiaNombre: mercaderia?.nombre,
-      costoCentavos: costoCentavos,
-      rutaFoto: rutaFoto,
-      sync: EstadoSync.local,
-    );
+    final doc = nuevo.comprobante;
+    if (listo.productos.numerarComprobante && doc != null) {
+      nuevo = nuevo.copiarCon(
+        comprobante: Comprobante(
+          tipo: doc.tipo,
+          serie: doc.serie,
+          numero: '${_siguienteComprobante(doc.tipo, doc.serie)}',
+        ),
+      );
+    }
+    final lineas = listo.lineasDe(nuevo, _proximoNumeroAlmacen);
     _movimientos.add(nuevo);
+    _lineas.addAll(lineas);
     return nuevo;
   }
+
+  @override
+  Future<Movimiento> guardarCorreccion(
+    Movimiento anulado,
+    MovimientoPorGuardar listo,
+  ) async {
+    final actual = await movimientoPorId(anulado.id);
+    if (actual == null || actual.anulado) {
+      throw ArgumentError('Ese movimiento ya se había anulado.');
+    }
+    final nuevo = await guardarNuevo(listo);
+    _reemplazar(anulado.copiarCon(reemplazadoPor: nuevo.id));
+    return nuevo;
+  }
+
+  @override
+  Future<void> guardarCambio(Movimiento movimiento) async =>
+      _reemplazar(movimiento);
 
   @override
   Future<Movimiento> emitirRecibo(
@@ -270,39 +281,6 @@ class RepositorioDemo extends RepositorioMovimientos {
     );
     _reemplazar(conRecibo);
     return conRecibo;
-  }
-
-  @override
-  Future<Movimiento> editar(Movimiento movimiento) async {
-    final validado = await validarEdicionMercaderia(movimiento);
-    final actualizado = validado.copiarCon(
-      actualizadoEn: DateTime.now(),
-      sync: EstadoSync.local,
-    );
-    _reemplazar(actualizado);
-    return actualizado;
-  }
-
-  @override
-  Future<Movimiento> eliminar(Movimiento movimiento) async {
-    final borrado = movimiento.copiarCon(
-      eliminadoEn: DateTime.now(),
-      actualizadoEn: DateTime.now(),
-      sync: EstadoSync.local,
-    );
-    _reemplazar(borrado);
-    return borrado;
-  }
-
-  @override
-  Future<Movimiento> restaurar(Movimiento movimiento) async {
-    final restaurado = movimiento.copiarCon(
-      eliminadoEn: null,
-      actualizadoEn: DateTime.now(),
-      sync: EstadoSync.local,
-    );
-    _reemplazar(restaurado);
-    return restaurado;
   }
 
   void _reemplazar(Movimiento m) {

@@ -1,7 +1,7 @@
 /// DDL de la base local.
 ///
-/// Movimientos, negocio, categorías propias, jornadas, fondo y tipos de
-/// mercadería. Las bases migradas también conservan los arqueos históricos.
+/// Movimientos, negocio, categorías propias, jornadas, fondo, productos y el
+/// kardex. Las bases migradas también conservan los arqueos históricos.
 class Esquema {
   /// v1: el libro básico.
   /// v2: la contabilidad del Excel — correlativo, cuenta asociada, IGV,
@@ -18,7 +18,13 @@ class Esquema {
   /// v8: los datos del voucher del Formato 1.2 —banco del otro, vínculo,
   ///     documento y situación—. `ruta_foto` ya existía y ahora guarda el
   ///     voucher adjunto.
-  static const version = 8;
+  /// v9: el inventario. Los tipos de mercadería pasan a ser productos, con
+  ///     código, unidad, unidad de compra y stock mínimo; la tabla `kardex`
+  ///     guarda cada entrada y salida del almacén; el movimiento anota su
+  ///     comprobante, si es una exportación, quién lo registró y si se
+  ///     anuló; el negocio, su método de valuación; y la tabla `cierres`,
+  ///     los meses cerrados.
+  static const version = 9;
 
   static const tablaMovimientos = 'movimientos';
   static const tablaNegocio = 'negocio';
@@ -27,8 +33,46 @@ class Esquema {
   static const tablaJornadas = 'jornadas';
   static const tablaFondo = 'fondo';
   static const tablaMercaderias = 'mercaderias';
+  static const tablaKardex = 'kardex';
+  static const tablaCierres = 'cierres';
 
+  /// Los productos. `codigo` es único por su índice; la columna admite null
+  /// sólo porque en la migración se agrega vacía y se llena después.
   static const crearMercaderias =
+      '''
+    CREATE TABLE $tablaMercaderias (
+      id              TEXT    PRIMARY KEY,
+      nombre          TEXT    NOT NULL,
+      nombre_clave    TEXT    NOT NULL UNIQUE,
+      creado_en       INTEGER NOT NULL,
+      codigo          TEXT,
+      tipo_existencia TEXT    NOT NULL DEFAULT '01',
+      unidad          TEXT    NOT NULL DEFAULT '07',
+      stock_minimo    INTEGER NOT NULL DEFAULT 0 CHECK (stock_minimo >= 0),
+      precio_sugerido INTEGER CHECK (precio_sugerido > 0),
+      activo          INTEGER NOT NULL DEFAULT 1,
+      unidad_compra   TEXT,
+      factor_compra   INTEGER CHECK (factor_compra > 0),
+      unidad_factura  TEXT    NOT NULL DEFAULT 'NIU'
+    )
+  ''';
+
+  /// Los meses cerrados: uno por fila. Cerrar un mes deja cerrados también
+  /// los anteriores (ver `CierreMes`).
+  static const crearCierres =
+      '''
+    CREATE TABLE IF NOT EXISTS $tablaCierres (
+      anio        INTEGER NOT NULL,
+      mes         INTEGER NOT NULL CHECK (mes BETWEEN 1 AND 12),
+      cerrado_en  INTEGER NOT NULL,
+      cerrado_por TEXT    NOT NULL DEFAULT '',
+      PRIMARY KEY (anio, mes)
+    )
+  ''';
+
+  /// La tabla de mercaderías tal como era en la v7 y la v8, congelada: la
+  /// migración a la v7 la crea así, y la v9 le agrega lo demás.
+  static const crearMercaderiasV7 =
       '''
     CREATE TABLE $tablaMercaderias (
       id TEXT PRIMARY KEY,
@@ -38,8 +82,98 @@ class Esquema {
     )
   ''';
 
+  /// Cada entrada o salida del almacén. El costo de las salidas no se
+  /// guarda: lo calcula el kardex. Las líneas de una compra o una venta
+  /// apuntan a su movimiento y siguen su suerte: si el movimiento se borra o
+  /// se anula, dejan de contar.
+  static const crearKardex =
+      '''
+    CREATE TABLE IF NOT EXISTS $tablaKardex (
+      id            TEXT    PRIMARY KEY,
+      mercaderia_id TEXT    NOT NULL REFERENCES mercaderias(id),
+      fecha         INTEGER NOT NULL,
+      numero        INTEGER NOT NULL UNIQUE,
+      operacion     TEXT    NOT NULL,
+      entrada       INTEGER NOT NULL CHECK (entrada IN (0, 1)),
+      cantidad      INTEGER NOT NULL CHECK (cantidad > 0),
+      costo_total   INTEGER CHECK (costo_total >= 0),
+      importe       INTEGER CHECK (importe >= 0),
+      movimiento_id TEXT    REFERENCES movimientos(id),
+      origen_id     TEXT    REFERENCES kardex(id),
+      doc_tipo      TEXT,
+      doc_serie     TEXT,
+      doc_numero    TEXT,
+      cuenta_costo  TEXT,
+      glosa         TEXT    NOT NULL DEFAULT '',
+      descuento     INTEGER NOT NULL DEFAULT 0 CHECK (descuento >= 0),
+      registrado_por TEXT,
+      creado_en     INTEGER NOT NULL
+    )
+  ''';
+
+  /// Los índices de la v9. Van aparte de [indices] porque tocan tablas que
+  /// las bases viejas no tienen: una base nueva corre los dos.
+  static const indicesV9 = <String>[
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_mercaderia_codigo ON $tablaMercaderias (codigo)',
+    'CREATE INDEX IF NOT EXISTS idx_kardex_producto ON $tablaKardex (mercaderia_id, fecha, numero)',
+    'CREATE INDEX IF NOT EXISTS idx_kardex_movimiento ON $tablaKardex (movimiento_id)',
+    'CREATE INDEX IF NOT EXISTS idx_kardex_origen ON $tablaKardex (origen_id)',
+  ];
+
+  /// Las columnas que agrega la v9, como (tabla, columna, definición). Se
+  /// agregan sólo si faltan: algunas bases de prueba se arman con la tabla
+  /// del negocio ya actual, y SQLite falla si la columna existe.
+  static const columnasV9 = <(String, String, String)>[
+    (tablaMercaderias, 'codigo', 'TEXT'),
+    (tablaMercaderias, 'tipo_existencia', "TEXT NOT NULL DEFAULT '01'"),
+    (tablaMercaderias, 'unidad', "TEXT NOT NULL DEFAULT '07'"),
+    (
+      tablaMercaderias,
+      'stock_minimo',
+      'INTEGER NOT NULL DEFAULT 0 CHECK (stock_minimo >= 0)',
+    ),
+    (
+      tablaMercaderias,
+      'precio_sugerido',
+      'INTEGER CHECK (precio_sugerido > 0)',
+    ),
+    (tablaMercaderias, 'activo', 'INTEGER NOT NULL DEFAULT 1'),
+    (tablaMercaderias, 'unidad_compra', 'TEXT'),
+    (tablaMercaderias, 'factor_compra', 'INTEGER CHECK (factor_compra > 0)'),
+    (tablaMercaderias, 'unidad_factura', "TEXT NOT NULL DEFAULT 'NIU'"),
+    (tablaMovimientos, 'doc_tipo', 'TEXT'),
+    (tablaMovimientos, 'doc_serie', 'TEXT'),
+    (tablaMovimientos, 'doc_numero', 'TEXT'),
+    (tablaMovimientos, 'exportacion', 'INTEGER NOT NULL DEFAULT 0'),
+    (tablaMovimientos, 'registrado_por', 'TEXT'),
+    (tablaMovimientos, 'anulado_en', 'INTEGER'),
+    (tablaMovimientos, 'reemplazado_por', 'TEXT'),
+    (tablaNegocio, 'metodo_valuacion', "TEXT NOT NULL DEFAULT 'promedio'"),
+    (tablaNegocio, 'kardex_desde', 'INTEGER'),
+  ];
+
+  /// Después de las columnas: los tipos de mercadería que ya existían
+  /// reciben su código por orden de creación (P001, P002…), y se crean el
+  /// kardex, sus índices y la tabla de meses cerrados. Lo registrado antes
+  /// no entra al kardex: no tiene cantidades. Los tipos quedan en unidades
+  /// (07), que en la factura es NIU.
+  static const migracionV9 = <String>[
+    '''
+    UPDATE $tablaMercaderias SET codigo = printf('P%03d', (
+      SELECT COUNT(*) FROM $tablaMercaderias AS previos
+      WHERE previos.creado_en < $tablaMercaderias.creado_en
+        OR (previos.creado_en = $tablaMercaderias.creado_en
+            AND previos.id <= $tablaMercaderias.id)
+    ))
+    WHERE codigo IS NULL OR codigo = ''
+    ''',
+    crearKardex,
+    crearCierres,
+    ...indicesV9,
+  ];
+
   static const migracionV7 = <String>[
-    crearMercaderias,
+    crearMercaderiasV7,
     'ALTER TABLE $tablaMovimientos ADD COLUMN mercaderia_id TEXT REFERENCES mercaderias(id)',
     'ALTER TABLE $tablaMovimientos ADD COLUMN mercaderia_nombre TEXT',
     'ALTER TABLE $tablaMovimientos ADD COLUMN costo_centavos INTEGER CHECK (costo_centavos >= 0)',
@@ -56,6 +190,50 @@ class Esquema {
   ];
 
   static const crearMovimientos =
+      '''
+    CREATE TABLE $tablaMovimientos (
+      id                    TEXT    PRIMARY KEY,
+      numero                INTEGER NOT NULL DEFAULT 0,
+      tipo                  TEXT    NOT NULL,
+      centavos              INTEGER NOT NULL,
+      categoria_id          TEXT    NOT NULL,
+      concepto              TEXT    NOT NULL,
+      medio                 TEXT    NOT NULL,
+      cuenta                TEXT    NOT NULL,
+      fecha                 INTEGER NOT NULL,
+      creado_en             INTEGER NOT NULL,
+      actualizado_en        INTEGER NOT NULL,
+      cuenta_asociada       TEXT,
+      igv_centavos          INTEGER NOT NULL DEFAULT 0,
+      contraparte           TEXT,
+      documento_contraparte TEXT,
+      numero_transaccion    TEXT,
+      banco_tercero         TEXT,
+      vinculo               TEXT,
+      documento_pago        TEXT,
+      situacion             TEXT,
+      numero_recibo         INTEGER,
+      numero_boleta         INTEGER,
+      tesorero              TEXT,
+      detalle_efectivo      TEXT,
+      mercaderia_id         TEXT REFERENCES mercaderias(id),
+      mercaderia_nombre     TEXT,
+      costo_centavos        INTEGER CHECK (costo_centavos >= 0),
+      doc_tipo              TEXT,
+      doc_serie             TEXT,
+      doc_numero            TEXT,
+      exportacion           INTEGER NOT NULL DEFAULT 0,
+      registrado_por        TEXT,
+      anulado_en            INTEGER,
+      reemplazado_por       TEXT,
+      ruta_foto             TEXT,
+      eliminado_en          INTEGER,
+      sync                  TEXT    NOT NULL
+    )
+  ''';
+
+  /// La tabla tal como era en la v8, congelada para probar la migración.
+  static const crearMovimientosV8 =
       '''
     CREATE TABLE $tablaMovimientos (
       id                    TEXT    PRIMARY KEY,
@@ -156,6 +334,25 @@ class Esquema {
 
   /// Una sola fila, con id fijo 1: el negocio es uno.
   static const crearNegocio =
+      '''
+    CREATE TABLE $tablaNegocio (
+      id                  INTEGER PRIMARY KEY,
+      razon_social        TEXT    NOT NULL DEFAULT '',
+      documento           TEXT    NOT NULL DEFAULT '',
+      direccion           TEXT    NOT NULL DEFAULT '',
+      entidad_financiera  TEXT    NOT NULL DEFAULT '',
+      cuenta_corriente    TEXT    NOT NULL DEFAULT '',
+      saldo_inicial_caja  INTEGER NOT NULL DEFAULT 0,
+      saldo_inicial_banco INTEGER NOT NULL DEFAULT 0,
+      inicio_periodo      INTEGER,
+      tesorero            TEXT    NOT NULL DEFAULT '',
+      metodo_valuacion    TEXT    NOT NULL DEFAULT 'promedio',
+      kardex_desde        INTEGER
+    )
+  ''';
+
+  /// La tabla del negocio tal como era de la v4 a la v8.
+  static const crearNegocioV8 =
       '''
     CREATE TABLE $tablaNegocio (
       id                  INTEGER PRIMARY KEY,

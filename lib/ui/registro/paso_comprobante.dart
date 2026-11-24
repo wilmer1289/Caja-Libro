@@ -18,6 +18,7 @@ class PasoComprobante extends StatefulWidget {
     required this.movimiento,
     required this.negocio,
     required this.conBoleta,
+    this.itemsBoleta = const [],
     required this.tesorero,
     required this.tesoreroFijo,
     required this.onTesoreroFijo,
@@ -27,6 +28,9 @@ class PasoComprobante extends StatefulWidget {
   final Movimiento movimiento;
   final Negocio negocio;
   final bool conBoleta;
+
+  /// Los productos de la venta, para verlos en su factura o boleta.
+  final List<ItemComprobante> itemsBoleta;
   final TextEditingController tesorero;
   final bool tesoreroFijo;
   final ValueChanged<bool> onTesoreroFijo;
@@ -45,6 +49,7 @@ class _PasoComprobanteState extends State<PasoComprobante> {
             boleta: Boleta(
               negocio: widget.negocio,
               movimiento: widget.movimiento,
+              items: widget.itemsBoleta,
             ),
           )
         : ReciboVista(
@@ -107,7 +112,7 @@ class _PasoComprobanteState extends State<PasoComprobante> {
           SegmentedButton<bool>(
             segments: const [
               ButtonSegment(value: false, label: Text('Recibo')),
-              ButtonSegment(value: true, label: Text('Boleta')),
+              ButtonSegment(value: true, label: Text('Comprobante')),
             ],
             selected: {_verBoleta},
             showSelectedIcon: false,

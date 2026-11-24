@@ -17,6 +17,8 @@ class Encabezado extends StatelessWidget {
     required this.usuario,
     required this.onSalir,
     required this.onPerfil,
+    this.onInventario,
+    this.alertasInventario = 0,
     this.acciones = const [],
     this.alFinal,
     this.compacto = false,
@@ -31,6 +33,12 @@ class Encabezado extends StatelessWidget {
 
   /// Abre los datos del negocio.
   final VoidCallback onPerfil;
+
+  /// Abre la ventana del inventario; en escritorio aparece junto al menú del negocio.
+  final VoidCallback? onInventario;
+
+  /// Cantidad de productos que llegaron al stock mínimo.
+  final int alertasInventario;
 
   /// Botones que van antes del usuario (registrar, sincronizar).
   final List<Widget> acciones;
@@ -120,6 +128,13 @@ class Encabezado extends StatelessWidget {
             ),
           ),
           ...acciones,
+          if (onInventario != null) ...[
+            _BotonInventario(
+              alertas: alertasInventario,
+              onPressed: onInventario!,
+            ),
+            SizedBox(width: compacto ? 2 : 6),
+          ],
           SizedBox(width: compacto ? 4 : 12),
           _Usuario(
             nombre: usuario,
@@ -129,6 +144,39 @@ class Encabezado extends StatelessWidget {
           ),
           ?alFinal,
         ],
+      ),
+    );
+  }
+}
+
+class _BotonInventario extends StatelessWidget {
+  const _BotonInventario({
+    required this.alertas,
+    required this.onPressed,
+  });
+
+  final int alertas;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: alertas == 0
+          ? 'Inventario'
+          : 'Inventario · $alertas producto(s) por reponer',
+      child: IconButton(
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          foregroundColor: Tokens.texto,
+          backgroundColor: Tokens.superficie,
+          side: const BorderSide(color: Tokens.borde),
+          fixedSize: const Size(42, 42),
+        ),
+        icon: Badge(
+          isLabelVisible: alertas > 0,
+          label: Text(alertas > 99 ? '99+' : '$alertas'),
+          child: const Icon(Icons.inventory_2_outlined, size: 20),
+        ),
       ),
     );
   }

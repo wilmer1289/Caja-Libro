@@ -724,7 +724,8 @@ class ExportadorPdf {
       'Recibo ${recibo.esIngreso ? 'ingreso' : 'egreso'} '
       '${recibo.numero}.pdf';
 
-  static String nombreBoleta(Boleta boleta) => 'Boleta ${boleta.numero}.pdf';
+  static String nombreBoleta(Boleta boleta) =>
+      '${boleta.nombre} ${boleta.numero}.pdf';
 
   static String _dia(DateTime f) {
     String dos(int n) => n.toString().padLeft(2, '0');

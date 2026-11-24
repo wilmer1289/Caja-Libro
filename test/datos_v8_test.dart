@@ -77,7 +77,14 @@ void main() {
             ..remove('banco_tercero')
             ..remove('vinculo')
             ..remove('documento_pago')
-            ..remove('situacion');
+            ..remove('situacion')
+            ..remove('doc_tipo')
+            ..remove('doc_serie')
+            ..remove('doc_numero')
+            ..remove('exportacion')
+            ..remove('registrado_por')
+            ..remove('anulado_en')
+            ..remove('reemplazado_por');
       await db.insert('movimientos', viejo);
       await db.close();
 
@@ -85,7 +92,7 @@ void main() {
         ruta,
         options: BaseDatos.opciones,
       );
-      expect(await db.getVersion(), 8);
+      expect(await db.getVersion(), Esquema.version);
       final fila = (await db.query('movimientos')).single;
       for (final campo in [
         'banco_tercero',

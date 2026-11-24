@@ -276,6 +276,7 @@ class _NegocioPaginaState extends State<NegocioPagina> {
 
   @override
   Widget build(BuildContext context) {
+    final metodoValuacion = context.watch<EstadoCaja>().negocio.metodoValuacion.etiqueta;
     return LayoutBuilder(
       builder: (context, medidas) {
         final ancho = medidas.maxWidth >= 640;
@@ -407,6 +408,38 @@ class _NegocioPaginaState extends State<NegocioPagina> {
               controlador: _tesorero,
               capitalizar: TextCapitalization.words,
               onCambio: () => setState(() {}),
+            ),
+            const SizedBox(height: 8),
+            const _Bloque(
+              icono: Icons.inventory_2_outlined,
+              titulo: 'Inventario',
+              bajada: 'Método de valuación usado para calcular el costo de salida.',
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+              decoration: BoxDecoration(
+                color: Tokens.fondo,
+                borderRadius: BorderRadius.circular(Tokens.radio),
+                border: Border.all(color: Tokens.borde),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Método de valuación',
+                      style: TextStyle(fontSize: 13, color: Tokens.texto2),
+                    ),
+                  ),
+                  Text(
+                    metodoValuacion,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: Tokens.texto,
+                    ),
+                  ),
+                ],
+              ),
             ),
             if (_errorGeneral != null) _AvisoError(_errorGeneral!),
           ],

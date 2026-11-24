@@ -17,6 +17,7 @@ import '../../dominio/pcge.dart';
 import '../../dominio/recibo.dart';
 import '../../estado/estado_caja.dart';
 import '../formatos/recibo_hoja.dart';
+import '../registro/registro_hoja.dart';
 import '../widgets/voucher_adjunto.dart';
 import 'datos_voucher_dialogo.dart';
 
@@ -180,10 +181,39 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
     return 'Datos del voucher guardados';
   }
 
+  Future<void> _anularYVolverARegistrar(
+    EstadoCaja estado,
+    Movimiento movimiento,
+  ) async {
+    try {
+      final lineas = await estado.leerLineasDe(movimiento.id);
+      if (!mounted) return;
+      final nuevo = await RegistroHoja.abrir(
+        context,
+        movimiento.tipo,
+        original: movimiento,
+        lineasOriginales: lineas,
+      );
+      if (nuevo != null && mounted) {
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = true;
+          _mensaje = 'No se pudo abrir la corrección: $e';
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final estado = context.watch<EstadoCaja>();
-    final m = estado.movimientos.firstWhere((x) => x.id == widget.movimientoId);
+    final m = [
+      ...estado.movimientos,
+      ...estado.anulados,
+    ].firstWhere((x) => x.id == widget.movimientoId);
     final negocio = estado.negocio;
     final entro = m.tipo == Tipo.entro;
     final color = entro ? Tokens.entro : Tokens.salio;
@@ -191,10 +221,27 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
     final recibo = m.numeroRecibo == null
         ? null
         : Recibo(negocio: negocio, movimiento: m);
+    final itemsBoleta = ItemComprobante.de(
+      estado.lineasDe(m.id),
+      estado.producto,
+    );
     final boleta = m.numeroBoleta == null
         ? null
-        : Boleta(negocio: negocio, movimiento: m);
+        : Boleta(negocio: negocio, movimiento: m, items: itemsBoleta);
     final ventaSinBoleta = boleta == null && Boleta.corresponde(m.categoria);
+    final lineasOriginales = estado.lineasDe(m.id);
+    final idsLineas = lineasOriginales.map((l) => l.id).toSet();
+    final tieneDevoluciones = estado.lineasAlmacen.any(
+      (l) => l.origenId != null && idsLineas.contains(l.origenId),
+    );
+    final enCajaCerrada = estado.cajas.any(
+      (caja) => !caja.abierta && caja.incluye(m, ajustes: estado.ajustes),
+    );
+    final puedeCorregir =
+        !m.anulado &&
+        !estado.mesCerrado(m.fecha) &&
+        !enCajaCerrada &&
+        !tieneDevoluciones;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -318,9 +365,11 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
                 const SizedBox(height: 10),
                 _Papel(
                   icono: Icons.shopping_bag_outlined,
-                  titulo: 'Boleta de venta',
+                  titulo: boleta?.nombre ?? 'Boleta de venta',
                   detalle: boleta == null
                       ? 'Venta anterior a las boletas: no tiene número'
+                      : boleta.electronica
+                      ? boleta.numero
                       : '${boleta.numero} · control interno',
                   acciones: boleta == null
                       ? const []
@@ -332,6 +381,7 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
                               context,
                               movimiento: m,
                               negocio: negocio,
+                              items: itemsBoleta,
                             ),
                           ),
                           _Accion(
@@ -409,6 +459,25 @@ class _AccionesMovimientoState extends State<AccionesMovimiento> {
                       onTap: _ocupado
                           ? null
                           : () => _ejecutar(() => _completarDatos(estado, m)),
+                    ),
+                  ],
+                ),
+              ],
+              if (puedeCorregir) ...[
+                const SizedBox(height: 10),
+                _Papel(
+                  icono: Icons.edit_note_rounded,
+                  titulo: 'Corrección del registro',
+                  detalle:
+                      'El original queda anulado y se conserva en el historial',
+                  acciones: [
+                    _Accion(
+                      icono: Icons.restart_alt_rounded,
+                      texto: 'Anular y volver a registrar',
+                      principal: true,
+                      onTap: _ocupado
+                          ? null
+                          : () => _anularYVolverARegistrar(estado, m),
                     ),
                   ],
                 ),

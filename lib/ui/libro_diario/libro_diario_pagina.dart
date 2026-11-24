@@ -9,7 +9,9 @@ import '../../datos/export/abrir_archivo.dart';
 import '../../datos/export/exportador.dart';
 import '../../datos/export/exportador_pdf.dart';
 import '../../dominio/inventario.dart';
+import '../../dominio/kardex.dart';
 import '../../dominio/libro_diario.dart';
+import '../../dominio/mercaderia.dart';
 import '../../dominio/periodo.dart';
 import '../../estado/estado_caja.dart';
 import '../negocio/negocio_pagina.dart';
@@ -21,6 +23,7 @@ import 'resumen_libro.dart';
 import 'tarjeta_operacion.dart';
 import 'entender_codigos.dart';
 import 'entender_pasos.dart';
+import 'costo_ventas_resumen.dart';
 
 /// El Libro Diario (Formato 5.1): cada movimiento convertido en sus asientos.
 ///
@@ -71,9 +74,16 @@ class _LibroDiarioPaginaState extends State<LibroDiarioPagina> {
     }
 
     final (desde, hasta) = _rango;
+    final libro = estado.libroDiario(desde: desde, hasta: hasta);
+    final inventario = estado.inventarioHasta(fecha: hasta);
+    final kardex = estado.kardex;
+    final mercaderias = estado.mercaderias;
+
     return LibroDiarioVista(
-      libro: estado.libroDiario(desde: desde, hasta: hasta),
-      inventario: estado.inventarioHasta(fecha: hasta),
+      libro: libro,
+      inventario: inventario,
+      kardex: kardex,
+      mercaderias: mercaderias,
       periodo: _periodo,
       onPeriodo: (p) => setState(() => _periodo = p),
       onElegirFechas: _elegirFechas,
@@ -89,6 +99,8 @@ class LibroDiarioVista extends StatelessWidget {
     super.key,
     required this.libro,
     required this.inventario,
+    required this.kardex,
+    required this.mercaderias,
     required this.periodo,
     required this.onPeriodo,
     required this.onElegirFechas,
@@ -96,6 +108,8 @@ class LibroDiarioVista extends StatelessWidget {
 
   final LibroDiario libro;
   final InventarioMercaderias inventario;
+  final Kardex kardex;
+  final List<Mercaderia> mercaderias;
 
   /// El atajo activo; null cuando el rango es a medida.
   final Periodo? periodo;
@@ -116,6 +130,12 @@ class LibroDiarioVista extends StatelessWidget {
         final panel = PanelMercaderias(
           inventario: inventario,
           hasta: libro.hasta,
+          kardex: kardex,
+          mercaderias: mercaderias,
+        );
+        final costoVentas = CostoVentasResumenPanel(
+          resumen: libro.costoVentasResumen,
+          libro: libro,
         );
 
         return ListView(
@@ -143,6 +163,9 @@ class LibroDiarioVista extends StatelessWidget {
             EntenderCodigos(libro: libro),
             const SizedBox(height: 16),
             Aparece(child: ResumenLibro(libro: libro)),
+            const SizedBox(height: 16),
+            // Panel de Costo de ventas del período
+            Aparece(child: costoVentas),
             const SizedBox(height: 16),
             if (lateral)
               Row(
