@@ -548,10 +548,22 @@ class _TablaKardex extends StatelessWidget {
   static const _fijas = [96.0, 44.0, 56.0, 72.0, 52.0];
   static const _numerica = 94.0;
   static double get _ancho => _fijas.fold(0.0, (t, a) => t + a) + _numerica * 9;
-  static List<double> get _anchos => [
-    ..._fijas,
-    for (var i = 0; i < 9; i++) _numerica,
-  ];
+
+  /// Los anchos de las 14 columnas. Si sobra espacio (el inventario ocupa
+  /// toda la pantalla de la computadora), todas crecen parejo hasta llenar la
+  /// tarjeta; si falta, quedan en su mínimo y la tabla se desliza.
+  static List<double> _anchosPara(double disponible) {
+    final total = disponible.isFinite && disponible > _ancho
+        ? disponible
+        : _ancho;
+    final factor = total / _ancho;
+    final anchos = [
+      for (final a in _fijas) a * factor,
+      for (var i = 0; i < 8; i++) _numerica * factor,
+    ];
+    // La última se queda con el resto, para que no sobre ni falte un pelo.
+    return [...anchos, total - anchos.fold(0.0, (t, a) => t + a)];
+  }
 
   /// La cabecera de cada grupo y el tono de sus columnas.
   static const _cabeceraDocumento = Color(0xFFF1EEE9);
@@ -583,12 +595,12 @@ class _TablaKardex extends StatelessWidget {
   /// Una fila: `color` decide el texto de cada columna.
   Widget _fila(
     List<String> celdas, {
+    required List<double> anchos,
     required Color Function(int columna) color,
     FontWeight Function(int columna)? peso,
     Color? fondo,
     double alto = 38,
   }) {
-    final anchos = _anchos;
     return Container(
       color: fondo,
       height: alto,
@@ -624,7 +636,7 @@ class _TablaKardex extends StatelessWidget {
   }
 
   /// Las celdas de cada grupo en la cabecera: el título y su tono.
-  Widget _cabecera() {
+  Widget _cabecera(List<double> anchos) {
     Color fondo(int grupo) => switch (grupo) {
       1 => Tokens.entroSuave,
       2 => Tokens.salioSuave,
@@ -669,15 +681,16 @@ class _TablaKardex extends StatelessWidget {
       'C. unit.',
       'Total',
     ];
-    final anchos = _anchos;
+    double suma(int desde, int hasta) =>
+        anchos.sublist(desde, hasta).fold(0.0, (t, a) => t + a);
     return Column(
       children: [
         Row(
           children: [
-            grupo('DOCUMENTO', _fijas.fold<double>(0, (t, a) => t + a), 0),
-            grupo('↑ ENTRADAS', _numerica * 3, 1),
-            grupo('↓ SALIDAS', _numerica * 3, 2),
-            grupo('SALDO FINAL', _numerica * 3, 3),
+            grupo('DOCUMENTO', suma(0, 5), 0),
+            grupo('↑ ENTRADAS', suma(5, 8), 1),
+            grupo('↓ SALIDAS', suma(8, 11), 2),
+            grupo('SALDO FINAL', suma(11, 14), 3),
           ],
         ),
         Row(
@@ -706,6 +719,23 @@ class _TablaKardex extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Tokens.superficie,
+        borderRadius: BorderRadius.circular(Tokens.radio),
+        border: Border.all(color: Tokens.borde),
+        boxShadow: Tokens.sombraTarjeta,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(Tokens.radio),
+        child: LayoutBuilder(
+          builder: (context, medidas) => _tabla(_anchosPara(medidas.maxWidth)),
+        ),
+      ),
+    );
+  }
+
+  Widget _tabla(List<double> anchos) {
     Color tintaFila(int columna) => switch (_grupo(columna)) {
       1 => Tokens.entro,
       2 => Tokens.salio,
@@ -729,6 +759,7 @@ class _TablaKardex extends StatelessWidget {
         '',
         _monto(registro.saldoFinalCosto),
       ],
+      anchos: anchos,
       fondo: Tokens.escenario,
       alto: 42,
       peso: (_) => FontWeight.w800,
@@ -740,69 +771,57 @@ class _TablaKardex extends StatelessWidget {
       },
     );
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Tokens.superficie,
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        border: Border.all(color: Tokens.borde),
-        boxShadow: Tokens.sombraTarjeta,
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(Tokens.radio),
-        child: Scrollbar(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: _ancho,
-              child: Column(
-                children: [
-                  _cabecera(),
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: registro.filas.length,
-                      itemBuilder: (context, i) {
-                        final f = registro.filas[i];
-                        // El saldo con que empieza el período se marca,
-                        // para que no se confunda con una compra.
-                        final fondo = f.esSaldoInicial
-                            ? Tokens.marcaSuave
-                            : i.isOdd
-                            ? _cebra
-                            : Tokens.superficie;
-                        final fila = _fila(
-                          _celdas(f),
-                          fondo: fondo,
-                          color: tintaFila,
-                          peso: (c) => _grupo(c) == 3 && c == 13
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                        );
-                        final conAyuda = Tooltip(
-                          message: f.arrastrado
-                              ? 'Saldo del período anterior'
-                              : f.nombreOperacion,
-                          child: fila,
-                        );
-                        return entender
-                            ? Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  onTap: () => onEntender(i),
-                                  hoverColor: Tokens.marca.withValues(
-                                    alpha: .06,
-                                  ),
-                                  child: conAyuda,
-                                ),
-                              )
-                            : conAyuda;
-                      },
-                    ),
-                  ),
-                  const Divider(height: 1, color: Tokens.bordeFuerte),
-                  total,
-                ],
+    return Scrollbar(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: anchos.fold<double>(0, (t, a) => t + a),
+          child: Column(
+            children: [
+              _cabecera(anchos),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: registro.filas.length,
+                  itemBuilder: (context, i) {
+                    final f = registro.filas[i];
+                    // El saldo con que empieza el período se marca,
+                    // para que no se confunda con una compra.
+                    final fondo = f.esSaldoInicial
+                        ? Tokens.marcaSuave
+                        : i.isOdd
+                        ? _cebra
+                        : Tokens.superficie;
+                    final fila = _fila(
+                      _celdas(f),
+                      anchos: anchos,
+                      fondo: fondo,
+                      color: tintaFila,
+                      peso: (c) => _grupo(c) == 3 && c == 13
+                          ? FontWeight.w600
+                          : FontWeight.w400,
+                    );
+                    final conAyuda = Tooltip(
+                      message: f.arrastrado
+                          ? 'Saldo del período anterior'
+                          : f.nombreOperacion,
+                      child: fila,
+                    );
+                    return entender
+                        ? Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: () => onEntender(i),
+                              hoverColor: Tokens.marca.withValues(alpha: .06),
+                              child: conAyuda,
+                            ),
+                          )
+                        : conAyuda;
+                  },
+                ),
               ),
-            ),
+              const Divider(height: 1, color: Tokens.bordeFuerte),
+              total,
+            ],
           ),
         ),
       ),

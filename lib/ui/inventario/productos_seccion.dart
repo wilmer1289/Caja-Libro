@@ -403,24 +403,33 @@ class _TablaProductos extends StatelessWidget {
       thumbVisibility: true,
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            columnSpacing: 22,
-            headingRowHeight: 44,
-            dataRowMinHeight: 58,
-            dataRowMaxHeight: 68,
-            columns: const [
-              DataColumn(label: Text('Código')),
-              DataColumn(label: Text('Producto')),
-              DataColumn(label: Text('Unidad')),
-              DataColumn(label: Text('Stock'), numeric: true),
-              DataColumn(label: Text('Costo promedio'), numeric: true),
-              DataColumn(label: Text('Valor'), numeric: true),
-              DataColumn(label: Text('Estado')),
-              DataColumn(label: Text('Acciones')),
-            ],
-            rows: [for (final producto in productos) _fila(context, producto)],
+        // Con pantalla completa sobra ancho: la tabla lo llena repartiéndolo
+        // entre las columnas. Si falta, se desliza a los lados.
+        child: LayoutBuilder(
+          builder: (context, medidas) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: medidas.maxWidth),
+              child: DataTable(
+                columnSpacing: 22,
+                headingRowHeight: 44,
+                dataRowMinHeight: 58,
+                dataRowMaxHeight: 68,
+                columns: const [
+                  DataColumn(label: Text('Código')),
+                  DataColumn(label: Text('Producto')),
+                  DataColumn(label: Text('Unidad')),
+                  DataColumn(label: Text('Stock'), numeric: true),
+                  DataColumn(label: Text('Costo promedio'), numeric: true),
+                  DataColumn(label: Text('Valor'), numeric: true),
+                  DataColumn(label: Text('Estado')),
+                  DataColumn(label: Text('Acciones')),
+                ],
+                rows: [
+                  for (final producto in productos) _fila(context, producto),
+                ],
+              ),
+            ),
           ),
         ),
       ),

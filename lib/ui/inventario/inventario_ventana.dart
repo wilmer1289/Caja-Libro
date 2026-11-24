@@ -52,8 +52,9 @@ class OpcionInventario {
   ];
 }
 
-/// Ventana independiente del inventario. Al cerrarla, la sección de Mi Caja
-/// que estaba debajo permanece seleccionada.
+/// La pantalla del inventario. Ocupa toda la ventana, como otra página de la
+/// app: «Mi Caja» (o el botón atrás del celular) regresa a la sección de Mi
+/// Caja que estaba abierta.
 class InventarioVentana extends StatefulWidget {
   const InventarioVentana({super.key, this.seccion = 'productos'});
 
@@ -65,25 +66,15 @@ class InventarioVentana extends StatefulWidget {
     BuildContext context, {
     String seccion = 'productos',
   }) {
-    final pantalla = MediaQuery.sizeOf(context);
-    final movil = pantalla.width < 700;
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      barrierColor: Tokens.cromo.withValues(alpha: .48),
-      builder: (_) => Dialog(
-        insetPadding: EdgeInsets.all(movil ? 7 : 24),
-        clipBehavior: Clip.antiAlias,
-        backgroundColor: Tokens.fondo,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 1180,
-            maxHeight: (pantalla.height - (movil ? 14 : 48)).clamp(
-              360.0,
-              900.0,
-            ),
+    return Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          // Blanco arriba, para que la barra del celular siga al encabezado.
+          backgroundColor: Tokens.superficie,
+          body: SafeArea(
+            bottom: false,
+            child: InventarioVentana(seccion: seccion),
           ),
-          child: InventarioVentana(seccion: seccion),
         ),
       ),
     );
